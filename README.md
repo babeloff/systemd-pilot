@@ -1,6 +1,6 @@
-# SystemD Pilot
+# systemd Pilot
 
-SystemD Pilot is a desktop application for managing systemd services on GNU/linux systems.
+systemd Pilot is a desktop application for managing systemd services on GNU/linux systems.
 
 ![image](https://github.com/user-attachments/assets/863284ed-f0a4-43cf-bd51-756e0aed24f3)
 
@@ -13,7 +13,7 @@ SystemD Pilot is a desktop application for managing systemd services on GNU/linu
 - Create override configuration for any unit file using the edit button
 - Easy search. Just start typing and the app will find relevant services
 - Lightweight
-- Available as deb, rpm and AppImage
+- Available as deb, rpm, flatpak and AppImage
 - Full integration into GNOME desktop (libadwaita)
   
   ## Download
