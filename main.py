@@ -7,7 +7,7 @@ import subprocess
 import os
 from datetime import datetime
 
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 
 class SystemdManagerWindow(Adw.ApplicationWindow):
     def __init__(self, *args, **kwargs):
@@ -190,6 +190,17 @@ class SystemdManagerWindow(Adw.ApplicationWindow):
             Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
         )
 
+    @staticmethod
+    def is_running_in_flatpak():
+        """Check if the application is running inside Flatpak"""
+        return os.path.exists("/.flatpak-info")
+
+    def run_host_command(self, cmd):
+        """Run a command on the host system, handling Flatpak if needed"""
+        if SystemdManagerWindow.is_running_in_flatpak():
+            return ["flatpak-spawn", "--host"] + cmd
+        return cmd
+
     def load_services(self):
         """Load systemd services based on current filter"""
         try:
@@ -198,9 +209,9 @@ class SystemdManagerWindow(Adw.ApplicationWindow):
 
             # For user filter, show all user services
             if self.current_filter == "user":
-                cmd = ["flatpak-spawn", "--host", "systemctl", "--user", "list-units", "--type=service", "--all", "--no-pager", "--plain"]
+                cmd = ["systemctl", "--user", "list-units", "--type=service", "--all", "--no-pager", "--plain"]
                 output = subprocess.run(
-                    cmd,
+                    self.run_host_command(cmd),
                     capture_output=True,
                     text=True,
                     check=True
@@ -208,7 +219,7 @@ class SystemdManagerWindow(Adw.ApplicationWindow):
             else:
                 # For all other filters, combine system and user services
                 # Get system services
-                system_cmd = ["flatpak-spawn", "--host", "systemctl", "list-units", "--type=service"]
+                system_cmd = ["systemctl", "list-units", "--type=service"]
                 if self.current_filter == "all":
                     system_cmd.append("--all")
                 elif self.current_filter == "failed":
@@ -220,14 +231,14 @@ class SystemdManagerWindow(Adw.ApplicationWindow):
                 system_cmd.extend(["--no-pager", "--plain"])
                 
                 system_output = subprocess.run(
-                    system_cmd,
+                    self.run_host_command(system_cmd),
                     capture_output=True,
                     text=True,
                     check=True
                 ).stdout
 
                 # Get user services
-                user_cmd = ["flatpak-spawn", "--host", "systemctl", "--user", "list-units", "--type=service"]
+                user_cmd = ["systemctl", "--user", "list-units", "--type=service"]
                 if self.current_filter == "all":
                     user_cmd.append("--all")
                 elif self.current_filter == "failed":
@@ -239,7 +250,7 @@ class SystemdManagerWindow(Adw.ApplicationWindow):
                 user_cmd.extend(["--no-pager", "--plain"])
                 
                 user_output = subprocess.run(
-                    user_cmd,
+                    self.run_host_command(user_cmd),
                     capture_output=True,
                     text=True,
                     check=True
@@ -403,11 +414,14 @@ class SystemdManagerWindow(Adw.ApplicationWindow):
             
             # Build command based on service type
             if is_user_service:
-                cmd = ["flatpak-spawn", "--host", "systemctl", "--user", command, service_name]
+                cmd = ["systemctl", "--user", command, service_name]
             else:
-                cmd = ["flatpak-spawn", "--host", "pkexec", "systemctl", command, service_name]
+                cmd = ["systemctl", command, service_name]
+                if not self.is_root:
+                    cmd.insert(0, "pkexec")
             
-            subprocess.run(cmd, check=True)
+            # Run command with Flatpak handling
+            subprocess.run(self.run_host_command(cmd), check=True)
             
             # Use a callback to refresh all services but keep the current row expanded and scroll position
             def refresh_and_restore():
@@ -471,10 +485,12 @@ class SystemdManagerWindow(Adw.ApplicationWindow):
                 return
             
             # Build the complete command
-            cmd = ['flatpak-spawn', '--host']
-            cmd.append(terminal['binary'])
-            cmd.extend(terminal['args'])
-            cmd.append(edit_cmd)
+            terminal_cmd = [terminal['binary']]
+            terminal_cmd.extend(terminal['args'])
+            terminal_cmd.append(edit_cmd)
+            
+            # Use run_host_command for the complete command
+            cmd = self.run_host_command(terminal_cmd)
             
             GLib.spawn_async(
                 argv=cmd,
@@ -606,10 +622,12 @@ class SystemdManagerWindow(Adw.ApplicationWindow):
                 return
             
             # Build the complete command
-            cmd = ['flatpak-spawn', '--host']
-            cmd.append(terminal['binary'])
-            cmd.extend(terminal['args'])
-            cmd.append(status_cmd)
+            terminal_cmd = [terminal['binary']]
+            terminal_cmd.extend(terminal['args'])
+            terminal_cmd.append(status_cmd)
+            
+            # Use run_host_command for the complete command
+            cmd = self.run_host_command(terminal_cmd)
             
             GLib.spawn_async(
                 argv=cmd,
@@ -635,8 +653,13 @@ class SystemdManagerWindow(Adw.ApplicationWindow):
     def check_if_user_service(self, service_name):
         """Helper method to check if a service is a user service"""
         try:
-            check_cmd = ["flatpak-spawn", "--host", "systemctl", "--user", "list-units", "--type=service", "--all", "--no-pager", "--plain"]
-            result = subprocess.run(check_cmd, capture_output=True, text=True, check=True)
+            check_cmd = ["systemctl", "--user", "list-units", "--type=service", "--all", "--no-pager", "--plain"]
+            result = subprocess.run(
+                self.run_host_command(check_cmd),
+                capture_output=True,
+                text=True,
+                check=True
+            )
             # Check if the service name appears in the user services list
             return any(service_name in line for line in result.stdout.splitlines())
         except subprocess.CalledProcessError:
@@ -665,10 +688,10 @@ class SystemdManagerWindow(Adw.ApplicationWindow):
         
         for terminal in terminals:
             try:
-                # Use flatpak-spawn to check if terminal exists on host
+                # Use run_host_command to check if terminal exists
                 subprocess.run(
-                    ['flatpak-spawn', '--host', 'which', terminal['binary']], 
-                    check=True, 
+                    self.run_host_command(['which', terminal['binary']]),
+                    check=True,
                     capture_output=True
                 )
                 return terminal
