@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>org.mfat.systemdpilot</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>systemd Pilot</name>
+  <summary>Manage systemd services</summary>
+  <description>
+    <p>
+      systemd Pilot is a GTK4 application that helps you manage systemd services with a user-friendly interface. Features include:
+    </p>
+    <ul>
+      <li>View and manage system and user services</li>
+      <li>Start, stop, restart services</li>
+      <li>Enable or disable services</li>
+      <li>View detailed service status</li>
+      <li>Filter services by status</li>
+      <li>Search functionality</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">org.mfat.systemdpilot.desktop</launchable>
+  <screenshots>
+    <screenshot type="default">
+      <caption>Main window showing service list</caption>
+      <image>https://raw.githubusercontent.com/mfat/systemd-pilot/main/screenshots/main.png</image>
+    </screenshot>
+  </screenshots>
+  <url type="homepage">https://github.com/mfat/systemd-pilot</url>
+  <url type="bugtracker">https://github.com/mfat/systemd-pilot/issues</url>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="1.1.0" date="2024-02-20">
+      <description>
+        <p>Initial Flatpak release</p>
+      </description>
+    </release>
+  </releases>
+</component> 
