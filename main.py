@@ -7,11 +7,13 @@ import subprocess
 import os
 from datetime import datetime
 
+APP_VERSION = "1.1.0"
+
 class SystemdManagerWindow(Adw.ApplicationWindow):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.set_default_size(800, 600)
-        self.set_title("SystemD Pilot")
+        self.set_title("systemd Pilot")
         self.all_services = []
         self.is_root = os.geteuid() == 0
         self.current_filter = "all"  # Track current filter
@@ -62,7 +64,7 @@ class SystemdManagerWindow(Adw.ApplicationWindow):
         all_button.connect("toggled", self.on_filter_changed, "all")
         filter_box.append(all_button)
 
-        # Running services filter (changed from Active)
+        # Running services filter
         running_button = Gtk.ToggleButton(label="Running")
         running_button.connect("toggled", self.on_filter_changed, "running")
         filter_box.append(running_button)
@@ -77,12 +79,18 @@ class SystemdManagerWindow(Adw.ApplicationWindow):
         failed_button.connect("toggled", self.on_filter_changed, "failed")
         filter_box.append(failed_button)
 
+        # User services filter (moved to end)
+        user_button = Gtk.ToggleButton(label="User")
+        user_button.connect("toggled", self.on_filter_changed, "user")
+        filter_box.append(user_button)
+
         # Store filter buttons for toggling
         self.filter_buttons = {
             "all": all_button,
-            "running": running_button,  # Changed from active to running
+            "running": running_button,
             "inactive": inactive_button,
-            "failed": failed_button
+            "failed": failed_button,
+            "user": user_button
         }
 
         self.main_box.append(filter_box)
@@ -188,22 +196,57 @@ class SystemdManagerWindow(Adw.ApplicationWindow):
             if self.spinner_box.get_parent():
                 self.list_box.remove(self.spinner_box)
 
-            # Adjust command based on filter
-            if self.current_filter == "all":
-                cmd = ["systemctl", "list-units", "--type=service", "--all", "--no-pager", "--plain"]
-            elif self.current_filter == "failed":
-                cmd = ["systemctl", "list-units", "--type=service", "--state=failed", "--no-pager", "--plain"]
-            elif self.current_filter == "running":
-                cmd = ["systemctl", "list-units", "--type=service", "--state=running", "--no-pager", "--plain"]
-            elif self.current_filter == "inactive":
-                cmd = ["systemctl", "list-units", "--type=service", "--state=inactive", "--no-pager", "--plain"]
-            
-            output = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                check=True
-            ).stdout
+            # For user filter, show all user services
+            if self.current_filter == "user":
+                cmd = ["systemctl", "--user", "list-units", "--type=service", "--all", "--no-pager", "--plain"]  # Added --all flag
+                output = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    check=True
+                ).stdout
+            else:
+                # For all other filters, combine system and user services
+                # Get system services
+                system_cmd = ["systemctl", "list-units", "--type=service"]
+                if self.current_filter == "all":
+                    system_cmd.append("--all")  # Show all units including inactive ones
+                elif self.current_filter == "failed":
+                    system_cmd.extend(["--state=failed"])
+                elif self.current_filter == "running":
+                    system_cmd.extend(["--state=running"])
+                elif self.current_filter == "inactive":
+                    system_cmd.extend(["--state=inactive"])
+                system_cmd.extend(["--no-pager", "--plain"])
+                
+                system_output = subprocess.run(
+                    system_cmd,
+                    capture_output=True,
+                    text=True,
+                    check=True
+                ).stdout
+
+                # Get user services
+                user_cmd = ["systemctl", "--user", "list-units", "--type=service"]
+                if self.current_filter == "all":
+                    user_cmd.append("--all")  # Show all units including inactive ones
+                elif self.current_filter == "failed":
+                    user_cmd.extend(["--state=failed"])
+                elif self.current_filter == "running":
+                    user_cmd.extend(["--state=running"])
+                elif self.current_filter == "inactive":
+                    user_cmd.extend(["--state=inactive"])
+                user_cmd.extend(["--no-pager", "--plain"])
+                
+                user_output = subprocess.run(
+                    user_cmd,
+                    capture_output=True,
+                    text=True,
+                    check=True
+                ).stdout
+
+                # Combine outputs
+                output = system_output + "\n" + user_output
 
             self.parse_systemctl_output(output)
             
@@ -334,6 +377,18 @@ class SystemdManagerWindow(Adw.ApplicationWindow):
         try:
             # Get the row and its expanded state
             row = None
+            scrolled_window = None
+            scroll_value = None
+            
+            # Find the scrolled window
+            for widget in self.main_box:
+                if isinstance(widget, Gtk.ScrolledWindow):
+                    scrolled_window = widget
+                    vadjustment = scrolled_window.get_vadjustment()
+                    scroll_value = vadjustment.get_value()
+                    break
+            
+            # Find the row
             for child in self.list_box.observe_children():
                 if child.get_title() == service_name:
                     row = child
@@ -341,24 +396,36 @@ class SystemdManagerWindow(Adw.ApplicationWindow):
             
             was_expanded = row.get_expanded() if row else False
             
+            # Check if this is a user service by listing all user services
+            is_user_service = self.check_if_user_service(service_name)
+            
             service_name = f"{service_name}.service"  # Add .service suffix
-            cmd = ["systemctl", command, service_name]
-            if not self.is_root:
-                cmd.insert(0, "pkexec")
+            
+            # Build command based on service type
+            if is_user_service:
+                cmd = ["systemctl", "--user", command, service_name]
+            else:
+                cmd = ["systemctl", command, service_name]
+                if not self.is_root:
+                    cmd.insert(0, "pkexec")
             
             subprocess.run(cmd, check=True)
             
-            # Use a callback to restore the expanded state after refresh
-            def refresh_and_expand():
+            # Use a callback to refresh all services but keep the current row expanded and scroll position
+            def refresh_and_restore():
                 self.refresh_data()
                 # Find the row again after refresh and expand it if it was expanded
-                for child in self.list_box.observe_children():
-                    if child.get_title() == service_name[:-8]:  # Remove .service suffix
-                        child.set_expanded(was_expanded)
-                        break
+                if was_expanded:
+                    for child in self.list_box.observe_children():
+                        if child.get_title() == service_name[:-8]:  # Remove .service suffix
+                            child.set_expanded(True)
+                            # Restore scroll position
+                            if scrolled_window and scroll_value is not None:
+                                GLib.idle_add(lambda: scrolled_window.get_vadjustment().set_value(scroll_value))
+                            break
                 return False
             
-            GLib.timeout_add(1000, refresh_and_expand)
+            GLib.timeout_add(1000, refresh_and_restore)
             
         except subprocess.CalledProcessError as e:
             self.show_error_dialog(f"Failed to {command} service: {e}")
@@ -379,38 +446,60 @@ class SystemdManagerWindow(Adw.ApplicationWindow):
         self.run_systemctl_command("disable", service_name)
 
     def on_edit_service(self, button, service_name):
-        """Open systemctl edit for the service in a terminal"""
+        """Open systemctl edit for the service"""
         try:
+            # Get the row and its expanded state
+            row = None
+            for child in self.list_box.observe_children():
+                if child.get_title() == service_name:
+                    row = child
+                    break
+            
+            was_expanded = row.get_expanded() if row else False
+            
+            # Check if this is a user service
+            is_user_service = self.check_if_user_service(service_name)
             service_name = f"{service_name}.service"
+            
+            # Build the edit command based on service type
+            if is_user_service:
+                edit_cmd = f"systemctl --user edit {service_name}"
+            else:
+                edit_cmd = f"pkexec systemctl edit {service_name}"
             
             # Try different terminal emulators in order of preference
             terminals = [
-                ["gnome-terminal", "--", "pkexec", "systemctl", "edit", service_name],
-                ["xfce4-terminal", "-e", f"pkexec systemctl edit {service_name}"],
-                ["konsole", "-e", f"pkexec systemctl edit {service_name}"],
-                ["x-terminal-emulator", "-e", f"pkexec systemctl edit {service_name}"]
+                ["gnome-terminal", "--", "bash", "-c", f"{edit_cmd}"],
+                ["xfce4-terminal", "-e", f"bash -c '{edit_cmd}'"],
+                ["konsole", "-e", f"bash -c '{edit_cmd}'"],
+                ["x-terminal-emulator", "-e", f"bash -c '{edit_cmd}'"]
             ]
             
             for terminal_cmd in terminals:
                 try:
-                    # Use subprocess.run to check if the terminal exists
-                    subprocess.run(["which", terminal_cmd[0]], 
-                                check=True, 
-                                capture_output=True)
-                    
-                    # Terminal found, use it
+                    subprocess.run(["which", terminal_cmd[0]], check=True, capture_output=True)
                     GLib.spawn_async(
                         argv=terminal_cmd,
                         flags=GLib.SpawnFlags.SEARCH_PATH | GLib.SpawnFlags.DO_NOT_REAP_CHILD,
                         child_setup=None,
                         user_data=None
                     )
+                    
+                    # Use a callback to restore expanded state after edit
+                    def restore_expanded_state():
+                        if was_expanded:
+                            for child in self.list_box.observe_children():
+                                if child.get_title() == service_name[:-8]:
+                                    child.set_expanded(True)
+                                    break
+                        return False
+                    
+                    GLib.timeout_add(1000, restore_expanded_state)
                     return
                     
                 except subprocess.CalledProcessError:
                     continue
                     
-            # If we get here, no terminal was found
             self.show_error_dialog("No suitable terminal emulator found. Please install gnome-terminal, xfce4-terminal, or konsole.")
                 
         except GLib.Error as e:
@@ -503,39 +592,69 @@ class SystemdManagerWindow(Adw.ApplicationWindow):
     def on_show_status(self, button, service_name):
         """Show detailed status of the service"""
         try:
-            service_name = f"{service_name}.service"  # Add .service suffix
+            # Get the row and its expanded state
+            row = None
+            for child in self.list_box.observe_children():
+                if child.get_title() == service_name:
+                    row = child
+                    break
+            
+            was_expanded = row.get_expanded() if row else False
+            
+            # Check if this is a user service
+            is_user_service = self.check_if_user_service(service_name)
+            service_name = f"{service_name}.service"
+            
+            # Build the status command based on service type
+            status_cmd = f"systemctl {'--user ' if is_user_service else ''}status {service_name}"
+            
             # Try different terminal emulators in order of preference
             terminals = [
-                ["gnome-terminal", "--", "bash", "-c", f"systemctl status {service_name}; read -p 'Press Enter to close...'"],
-                ["xfce4-terminal", "-e", f"bash -c 'systemctl status {service_name}; read -p \"Press Enter to close...\"'"],
-                ["konsole", "-e", f"bash -c 'systemctl status {service_name}; read -p \"Press Enter to close...\"'"],
-                ["x-terminal-emulator", "-e", f"bash -c 'systemctl status {service_name}; read -p \"Press Enter to close...\"'"]
+                ["gnome-terminal", "--", "bash", "-c", f"{status_cmd}; read -p 'Press Enter to close...'"],
+                ["xfce4-terminal", "-e", f"bash -c '{status_cmd}; read -p \"Press Enter to close...\"'"],
+                ["konsole", "-e", f"bash -c '{status_cmd}; read -p \"Press Enter to close...\"'"],
+                ["x-terminal-emulator", "-e", f"bash -c '{status_cmd}; read -p \"Press Enter to close...\"'"]
             ]
             
             for terminal_cmd in terminals:
                 try:
-                    # Use subprocess.run to check if the terminal exists
-                    subprocess.run(["which", terminal_cmd[0]], 
-                                check=True, 
-                                capture_output=True)
-                    
-                    # Terminal found, use it
+                    subprocess.run(["which", terminal_cmd[0]], check=True, capture_output=True)
                     GLib.spawn_async(
                         argv=terminal_cmd,
                         flags=GLib.SpawnFlags.SEARCH_PATH | GLib.SpawnFlags.DO_NOT_REAP_CHILD,
                         child_setup=None,
                         user_data=None
                     )
+                    
+                    # Use a callback to restore expanded state after showing status
+                    def restore_expanded_state():
+                        if was_expanded:
+                            for child in self.list_box.observe_children():
+                                if child.get_title() == service_name[:-8]:
+                                    child.set_expanded(True)
+                                    break
+                        return False
+                    
+                    GLib.timeout_add(1000, restore_expanded_state)
                     return
                     
                 except subprocess.CalledProcessError:
                     continue
                     
-            # If we get here, no terminal was found
             self.show_error_dialog("No suitable terminal emulator found. Please install gnome-terminal, xfce4-terminal, or konsole.")
                 
         except GLib.Error as e:
             self.show_error_dialog(f"Failed to show service status: {e.message}")
+
+    def check_if_user_service(self, service_name):
+        """Helper method to check if a service is a user service"""
+        try:
+            check_cmd = ["systemctl", "--user", "list-units", "--type=service", "--all", "--no-pager", "--plain"]
+            result = subprocess.run(check_cmd, capture_output=True, text=True, check=True)
+            # Check if the service name appears in the user services list
+            return any(service_name in line for line in result.stdout.splitlines())
+        except subprocess.CalledProcessError:
+            return False
 
 class SystemdManagerApp(Adw.Application):
     def __init__(self):
@@ -571,10 +690,10 @@ class SystemdManagerApp(Adw.Application):
     def on_about_action(self, action, param):
         about = Adw.AboutWindow(
             transient_for=self.get_active_window(),
-            application_name="SystemD Pilot",
+            application_name="systemd Pilot",
             application_icon="system-run",
             developer_name="mFat",
-            version="1.0",
+            version=APP_VERSION,
             website="https://github.com/mfat/systemd-pilot",
             license_type=Gtk.License.GPL_3_0,
             developers=["mFat"],
