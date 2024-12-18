@@ -17,4 +17,4 @@ systemd Pilot is a desktop application for managing systemd services on GNU/linu
 - Full integration into GNOME desktop (libadwaita)
   
   ## Download
-- Download from the [releases[(https://github.com/mfat/systemd-pilot/releases) section 
+- Download from the [releases](https://github.com/mfat/systemd-pilot/releases) section 
