@@ -12,9 +12,9 @@ systemd Pilot is a desktop application for managing systemd services on GNU/linu
 - Start, Stop, Restart services, show status
 - Create override configuration for any unit file using the edit button
 - Easy search. Just start typing and the app will find relevant services
-- Lightweight
+- Lightweight and easy on system resources (just a single Python script)
 - Available as deb, rpm, flatpak and AppImage
 - Full integration into GNOME desktop (libadwaita)
   
   ## Download
-- Download from the [releases[(https://github.com/mfat/systemd-pilot/releases) section 
+- Download from the [releases](https://github.com/mfat/systemd-pilot/releases) section 
