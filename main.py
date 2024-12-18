@@ -198,7 +198,7 @@ class SystemdManagerWindow(Adw.ApplicationWindow):
 
             # For user filter, show all user services
             if self.current_filter == "user":
-                cmd = ["systemctl", "--user", "list-units", "--type=service", "--all", "--no-pager", "--plain"]  # Added --all flag
+                cmd = ["flatpak-spawn", "--host", "systemctl", "--user", "list-units", "--type=service", "--all", "--no-pager", "--plain"]
                 output = subprocess.run(
                     cmd,
                     capture_output=True,
@@ -208,9 +208,9 @@ class SystemdManagerWindow(Adw.ApplicationWindow):
             else:
                 # For all other filters, combine system and user services
                 # Get system services
-                system_cmd = ["systemctl", "list-units", "--type=service"]
+                system_cmd = ["flatpak-spawn", "--host", "systemctl", "list-units", "--type=service"]
                 if self.current_filter == "all":
-                    system_cmd.append("--all")  # Show all units including inactive ones
+                    system_cmd.append("--all")
                 elif self.current_filter == "failed":
                     system_cmd.extend(["--state=failed"])
                 elif self.current_filter == "running":
@@ -227,9 +227,9 @@ class SystemdManagerWindow(Adw.ApplicationWindow):
                 ).stdout
 
                 # Get user services
-                user_cmd = ["systemctl", "--user", "list-units", "--type=service"]
+                user_cmd = ["flatpak-spawn", "--host", "systemctl", "--user", "list-units", "--type=service"]
                 if self.current_filter == "all":
-                    user_cmd.append("--all")  # Show all units including inactive ones
+                    user_cmd.append("--all")
                 elif self.current_filter == "failed":
                     user_cmd.extend(["--state=failed"])
                 elif self.current_filter == "running":
@@ -403,11 +403,9 @@ class SystemdManagerWindow(Adw.ApplicationWindow):
             
             # Build command based on service type
             if is_user_service:
-                cmd = ["systemctl", "--user", command, service_name]
+                cmd = ["flatpak-spawn", "--host", "systemctl", "--user", command, service_name]
             else:
-                cmd = ["systemctl", command, service_name]
-                if not self.is_root:
-                    cmd.insert(0, "pkexec")
+                cmd = ["flatpak-spawn", "--host", "pkexec", "systemctl", command, service_name]
             
             subprocess.run(cmd, check=True)
             
@@ -463,45 +461,39 @@ class SystemdManagerWindow(Adw.ApplicationWindow):
             
             # Build the edit command based on service type
             if is_user_service:
-                edit_cmd = f"systemctl --user edit {service_name}"
+                edit_cmd = f"systemctl --user edit {service_name}; read -p 'Press Enter to close...'"
             else:
-                edit_cmd = f"pkexec systemctl edit {service_name}"
+                edit_cmd = f"pkexec systemctl edit {service_name}; read -p 'Press Enter to close...'"
             
-            # Try different terminal emulators in order of preference
-            terminals = [
-                ["gnome-terminal", "--", "bash", "-c", f"{edit_cmd}"],
-                ["xfce4-terminal", "-e", f"bash -c '{edit_cmd}'"],
-                ["konsole", "-e", f"bash -c '{edit_cmd}'"],
-                ["x-terminal-emulator", "-e", f"bash -c '{edit_cmd}'"]
-            ]
+            terminal = self.get_terminal_command()
+            if terminal is None:
+                self.show_error_dialog("No suitable terminal emulator found. Please install gnome-terminal, xfce4-terminal, or konsole.")
+                return
             
-            for terminal_cmd in terminals:
-                try:
-                    subprocess.run(["which", terminal_cmd[0]], check=True, capture_output=True)
-                    GLib.spawn_async(
-                        argv=terminal_cmd,
-                        flags=GLib.SpawnFlags.SEARCH_PATH | GLib.SpawnFlags.DO_NOT_REAP_CHILD,
-                        child_setup=None,
-                        user_data=None
-                    )
-                    
-                    # Use a callback to restore expanded state after edit
-                    def restore_expanded_state():
-                        if was_expanded:
-                            for child in self.list_box.observe_children():
-                                if child.get_title() == service_name[:-8]:
-                                    child.set_expanded(True)
-                                    break
-                        return False
-                    
-                    GLib.timeout_add(1000, restore_expanded_state)
-                    return
-                    
-                except subprocess.CalledProcessError:
-                    continue
-                    
-            self.show_error_dialog("No suitable terminal emulator found. Please install gnome-terminal, xfce4-terminal, or konsole.")
-                
+            # Build the complete command
+            cmd = ['flatpak-spawn', '--host']
+            cmd.append(terminal['binary'])
+            cmd.extend(terminal['args'])
+            cmd.append(edit_cmd)
+            
+            GLib.spawn_async(
+                argv=cmd,
+                flags=GLib.SpawnFlags.SEARCH_PATH | GLib.SpawnFlags.DO_NOT_REAP_CHILD,
+                child_setup=None,
+                user_data=None
+            )
+            
+            # Use a callback to restore expanded state after edit
+            def restore_expanded_state():
+                if was_expanded:
+                    for child in self.list_box.observe_children():
+                        if child.get_title() == service_name[:-8]:
+                            child.set_expanded(True)
+                            break
+                return False
+            
+            GLib.timeout_add(1000, restore_expanded_state)
+            
         except GLib.Error as e:
             self.show_error_dialog(f"Failed to edit service: {e.message}")
 
@@ -542,8 +534,8 @@ class SystemdManagerWindow(Adw.ApplicationWindow):
         return show_by_search and show_by_status
 
     def show_error_dialog(self, message):
-        dialog = Adw.MessageDialog.new(
-            transient_for=self,
+        dialog = Adw.MessageDialog(
+            parent=self,
             heading="Error",
             body=message
         )
@@ -606,55 +598,83 @@ class SystemdManagerWindow(Adw.ApplicationWindow):
             service_name = f"{service_name}.service"
             
             # Build the status command based on service type
-            status_cmd = f"systemctl {'--user ' if is_user_service else ''}status {service_name}"
+            status_cmd = f"systemctl {'--user ' if is_user_service else ''}status {service_name}; read -p 'Press Enter to close...'"
             
-            # Try different terminal emulators in order of preference
-            terminals = [
-                ["gnome-terminal", "--", "bash", "-c", f"{status_cmd}; read -p 'Press Enter to close...'"],
-                ["xfce4-terminal", "-e", f"bash -c '{status_cmd}; read -p \"Press Enter to close...\"'"],
-                ["konsole", "-e", f"bash -c '{status_cmd}; read -p \"Press Enter to close...\"'"],
-                ["x-terminal-emulator", "-e", f"bash -c '{status_cmd}; read -p \"Press Enter to close...\"'"]
-            ]
+            terminal = self.get_terminal_command()
+            if terminal is None:
+                self.show_error_dialog("No suitable terminal emulator found. Please install gnome-terminal, xfce4-terminal, or konsole.")
+                return
             
-            for terminal_cmd in terminals:
-                try:
-                    subprocess.run(["which", terminal_cmd[0]], check=True, capture_output=True)
-                    GLib.spawn_async(
-                        argv=terminal_cmd,
-                        flags=GLib.SpawnFlags.SEARCH_PATH | GLib.SpawnFlags.DO_NOT_REAP_CHILD,
-                        child_setup=None,
-                        user_data=None
-                    )
-                    
-                    # Use a callback to restore expanded state after showing status
-                    def restore_expanded_state():
-                        if was_expanded:
-                            for child in self.list_box.observe_children():
-                                if child.get_title() == service_name[:-8]:
-                                    child.set_expanded(True)
-                                    break
-                        return False
-                    
-                    GLib.timeout_add(1000, restore_expanded_state)
-                    return
-                    
-                except subprocess.CalledProcessError:
-                    continue
-                    
-            self.show_error_dialog("No suitable terminal emulator found. Please install gnome-terminal, xfce4-terminal, or konsole.")
-                
+            # Build the complete command
+            cmd = ['flatpak-spawn', '--host']
+            cmd.append(terminal['binary'])
+            cmd.extend(terminal['args'])
+            cmd.append(status_cmd)
+            
+            GLib.spawn_async(
+                argv=cmd,
+                flags=GLib.SpawnFlags.SEARCH_PATH | GLib.SpawnFlags.DO_NOT_REAP_CHILD,
+                child_setup=None,
+                user_data=None
+            )
+            
+            # Use a callback to restore expanded state after showing status
+            def restore_expanded_state():
+                if was_expanded:
+                    for child in self.list_box.observe_children():
+                        if child.get_title() == service_name[:-8]:
+                            child.set_expanded(True)
+                            break
+                return False
+            
+            GLib.timeout_add(1000, restore_expanded_state)
+            
         except GLib.Error as e:
             self.show_error_dialog(f"Failed to show service status: {e.message}")
 
     def check_if_user_service(self, service_name):
         """Helper method to check if a service is a user service"""
         try:
-            check_cmd = ["systemctl", "--user", "list-units", "--type=service", "--all", "--no-pager", "--plain"]
+            check_cmd = ["flatpak-spawn", "--host", "systemctl", "--user", "list-units", "--type=service", "--all", "--no-pager", "--plain"]
             result = subprocess.run(check_cmd, capture_output=True, text=True, check=True)
             # Check if the service name appears in the user services list
             return any(service_name in line for line in result.stdout.splitlines())
         except subprocess.CalledProcessError:
             return False
+
+    def get_terminal_command(self):
+        """Helper function to find an available terminal emulator"""
+        terminals = [
+            {
+                'binary': 'gnome-terminal',
+                'args': ['--', 'bash', '-c']
+            },
+            {
+                'binary': 'xfce4-terminal',
+                'args': ['-e', 'bash -c']
+            },
+            {
+                'binary': 'konsole',
+                'args': ['-e', 'bash -c']
+            },
+            {
+                'binary': 'x-terminal-emulator',
+                'args': ['-e', 'bash -c']
+            }
+        ]
+        
+        for terminal in terminals:
+            try:
+                # Use flatpak-spawn to check if terminal exists on host
+                subprocess.run(
+                    ['flatpak-spawn', '--host', 'which', terminal['binary']], 
+                    check=True, 
+                    capture_output=True
+                )
+                return terminal
+            except subprocess.CalledProcessError:
+                continue
+        return None
 
 class SystemdManagerApp(Adw.Application):
     def __init__(self):
