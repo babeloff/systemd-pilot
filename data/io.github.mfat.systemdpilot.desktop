@@ -1,9 +1,9 @@
 [Desktop Entry]
-Name=Systemd Pilot
+Name=systemd Pilot
 Comment=Manage systemd services
 Exec=systemd-pilot
-Icon=org.mfat.systemdpilot
+Icon=io.github.mfat.systemdpilot
 Terminal=false
 Type=Application
-Categories=System
+Categories=System;
 StartupNotify=true

@@ -701,7 +701,7 @@ class SystemdManagerWindow(Adw.ApplicationWindow):
 
 class SystemdManagerApp(Adw.Application):
     def __init__(self):
-        super().__init__(application_id="org.mfat.systemdpilot",
+        super().__init__(application_id="io.github.mfat.systemdpilot",
                         flags=Gio.ApplicationFlags.FLAGS_NONE)
         self.connect('activate', self.on_activate)
         self.connect('shutdown', self.on_shutdown)
