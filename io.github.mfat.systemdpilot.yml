@@ -1,6 +1,6 @@
 app-id: io.github.mfat.systemdpilot
 runtime: org.gnome.Platform
-runtime-version: '45'
+runtime-version: '46'
 sdk: org.gnome.Sdk
 command: systemd-pilot
 finish-args:
@@ -10,9 +10,7 @@ finish-args:
   - --device=dri
   - --system-talk-name=org.freedesktop.systemd1
   - --system-talk-name=org.freedesktop.login1
-  - --socket=session-bus
   - --system-talk-name=org.freedesktop.PolicyKit1
-  - --socket=system-bus
   - --filesystem=xdg-run/gvfsd
   - --filesystem=xdg-config/gtk-4.0:ro
   - --filesystem=xdg-config/gtk-3.0:ro
