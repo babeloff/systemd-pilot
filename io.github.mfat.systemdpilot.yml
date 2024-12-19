@@ -29,7 +29,7 @@ modules:
       - echo 'from systemd_pilot.main import app' >> /app/bin/systemd-pilot
       - echo 'app.run(None)' >> /app/bin/systemd-pilot
       - chmod +x /app/bin/systemd-pilot
-      - install -Dm644 data/org.mfat.systemdpilot.desktop /app/share/applications/${FLATPAK_ID}.desktop
+      - install -Dm644 data/io.github.mfat.systemdpilot.desktop /app/share/applications/${FLATPAK_ID}.desktop
       - install -Dm644 systemd-pilot.png /app/share/icons/hicolor/128x128/apps/${FLATPAK_ID}.png
     sources:
       - type: git
