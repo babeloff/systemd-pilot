@@ -8,15 +8,31 @@ finish-args:
   - --socket=fallback-x11
   - --socket=wayland
   - --device=dri
+  - --filesystem=host
   - --system-talk-name=org.freedesktop.systemd1
   - --system-talk-name=org.freedesktop.login1
-  - --socket=session-bus
-  - --system-talk-name=org.freedesktop.PolicyKit1
-  - --socket=system-bus
-  - --filesystem=xdg-run/gvfsd
-  - --filesystem=xdg-config/gtk-4.0:ro
+  - --talk-name=org.freedesktop.systemd1
   - --filesystem=xdg-config/gtk-3.0:ro
 modules:
+  - name: gnome-logs
+    buildsystem: meson
+    config-opts:
+      - -Dman=false
+    sources:
+      - type: archive
+        url: https://download.gnome.org/sources/gnome-logs/45/gnome-logs-45.0.tar.xz
+        sha256: 0c5d6a866d0f5b3a99d0c891ebd91b3c74bfb0a0f1c0d1f6c7c6e6f7f7c2e4d
+
+  - name: gtksourceview5
+    buildsystem: meson
+    config-opts:
+      - -Dgtk_doc=false
+      - -Dvapi=false
+    sources:
+      - type: archive
+        url: https://download.gnome.org/sources/gtksourceview/5.8/gtksourceview-5.8.0.tar.xz
+        sha256: 110dd4c20def21886fbce9ae93c8afd39915e8f7a6c6c3c68765c5e1dd99be19
+
   - name: systemd-pilot
     buildsystem: simple
     build-commands:

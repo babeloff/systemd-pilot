@@ -2,12 +2,13 @@
 import gi
 gi.require_version('Gtk', '4.0')
 gi.require_version('Adw', '1')
-from gi.repository import Gtk, Adw, GLib, Gio, Gdk, Pango
+gi.require_version('GtkSource', '5')
+from gi.repository import Gtk, Adw, GLib, Gio, Gdk, Pango, GtkSource
 import subprocess
 import os
 from datetime import datetime
 
-APP_VERSION = "1.2.0"
+APP_VERSION = "2.0.0"
 
 class SystemdManagerWindow(Adw.ApplicationWindow):
     def __init__(self, *args, **kwargs):
@@ -37,22 +38,24 @@ class SystemdManagerWindow(Adw.ApplicationWindow):
         self.search_button.connect("toggled", self.on_search_toggled)
         header.pack_end(self.search_button)
 
-        # Menu button
-        menu_button = Gtk.MenuButton()
-        menu_button.set_icon_name("open-menu-symbolic")
-        menu_button.set_tooltip_text("Main menu")
-        header.pack_end(menu_button)
-
         # Create menu
         menu = Gio.Menu()
+        menu.append("New Service", "app.new_service")
         menu.append("Reload Configuration", "app.reload")
         menu.append("Feedback", "app.feedback")
         menu.append("About", "app.about")
+
+        # Menu button
+        menu_button = Gtk.MenuButton()
+        menu_button.set_icon_name("open-menu-symbolic")
         menu_button.set_menu_model(menu)
+        menu_button.set_tooltip_text("Main menu")
+        header.pack_end(menu_button)
 
         # Create filter buttons in a ribbon
         filter_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         filter_box.add_css_class("toolbar")
+        filter_box.add_css_class("red-background")  # Add custom CSS class
         filter_box.set_margin_start(6)
         filter_box.set_margin_end(6)
         filter_box.set_margin_top(6)
@@ -190,6 +193,9 @@ class SystemdManagerWindow(Adw.ApplicationWindow):
             Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
         )
 
+        style_manager = Adw.StyleManager.get_default()
+        style_manager.set_color_scheme(Adw.ColorScheme.PREFER_DARK)
+
     @staticmethod
     def is_running_in_flatpak():
         """Check if the application is running inside Flatpak"""
@@ -207,59 +213,110 @@ class SystemdManagerWindow(Adw.ApplicationWindow):
             if self.spinner_box.get_parent():
                 self.list_box.remove(self.spinner_box)
 
-            # For user filter, show all user services
+            # For user filter, handle separately
             if self.current_filter == "user":
-                cmd = ["systemctl", "--user", "list-units", "--type=service", "--all", "--no-pager", "--plain"]
-                output = subprocess.run(
-                    self.run_host_command(cmd),
-                    capture_output=True,
-                    text=True,
-                    check=True
-                ).stdout
-            else:
-                # For all other filters, combine system and user services
-                # Get system services
-                system_cmd = ["systemctl", "list-units", "--type=service"]
-                if self.current_filter == "all":
-                    system_cmd.append("--all")
-                elif self.current_filter == "failed":
-                    system_cmd.extend(["--state=failed"])
-                elif self.current_filter == "running":
-                    system_cmd.extend(["--state=running"])
-                elif self.current_filter == "inactive":
-                    system_cmd.extend(["--state=inactive"])
-                system_cmd.extend(["--no-pager", "--plain"])
-                
-                system_output = subprocess.run(
-                    self.run_host_command(system_cmd),
-                    capture_output=True,
-                    text=True,
-                    check=True
-                ).stdout
-
-                # Get user services
-                user_cmd = ["systemctl", "--user", "list-units", "--type=service"]
-                if self.current_filter == "all":
-                    user_cmd.append("--all")
-                elif self.current_filter == "failed":
-                    user_cmd.extend(["--state=failed"])
-                elif self.current_filter == "running":
-                    user_cmd.extend(["--state=running"])
-                elif self.current_filter == "inactive":
-                    user_cmd.extend(["--state=inactive"])
-                user_cmd.extend(["--no-pager", "--plain"])
-                
+                user_cmd = ["systemctl", "--user", "list-units", "--type=service", "--all", "--no-pager", "--plain"]
                 user_output = subprocess.run(
                     self.run_host_command(user_cmd),
                     capture_output=True,
                     text=True,
                     check=True
                 ).stdout
+                self.parse_systemctl_output(user_output)
+                return
 
-                # Combine outputs
-                output = system_output + "\n" + user_output
+            services_dict = {}  # Use dictionary to avoid duplicates
 
-            self.parse_systemctl_output(output)
+            # First get all installed unit files
+            unit_files_cmd = ["systemctl", "list-unit-files", "--type=service", "--no-pager", "--plain"]
+            unit_files_output = subprocess.run(
+                self.run_host_command(unit_files_cmd),
+                capture_output=True,
+                text=True,
+                check=True
+            ).stdout
+
+            # Then get active units with their current state
+            units_cmd = ["systemctl", "list-units", "--type=service", "--all", "--no-pager", "--plain"]
+            if self.current_filter != "all":
+                if self.current_filter == "running":
+                    units_cmd.extend(["--state=active"])
+                elif self.current_filter == "inactive":
+                    units_cmd.extend(["--state=inactive"])
+                elif self.current_filter == "failed":
+                    units_cmd.extend(["--state=failed"])
+
+            units_output = subprocess.run(
+                self.run_host_command(units_cmd),
+                capture_output=True,
+                text=True,
+                check=True
+            ).stdout
+
+            # Parse unit files first (to get all installed services)
+            for line in unit_files_output.splitlines():
+                if not line.strip() or line.startswith("UNIT FILE"):
+                    continue
+                parts = line.split(maxsplit=2)
+                if len(parts) >= 2:
+                    unit_name = parts[0]
+                    if unit_name.endswith('.service'):
+                        # Get service description using systemctl show
+                        show_cmd = ["systemctl", "show", unit_name, "--property=Description"]
+                        try:
+                            desc_output = subprocess.run(
+                                self.run_host_command(show_cmd),
+                                capture_output=True,
+                                text=True,
+                                check=True
+                            ).stdout
+                            description = desc_output.strip().split("=", 1)[1] if "=" in desc_output else ""
+                        except subprocess.CalledProcessError:
+                            description = ""
+
+                        services_dict[unit_name] = {
+                            'name': unit_name[:-8],
+                            'full_name': unit_name,
+                            'load': 'loaded',
+                            'active': 'inactive',
+                            'sub': 'dead',
+                            'description': description
+                        }
+
+            # Update with current state from list-units
+            for line in units_output.splitlines():
+                if not line.strip() or line.startswith("UNIT"):
+                    continue
+                parts = line.split(maxsplit=4)
+                if len(parts) >= 4:
+                    unit_name = parts[0]
+                    if unit_name.endswith('.service'):
+                        description = parts[4] if len(parts) > 4 else services_dict.get(unit_name, {}).get('description', '')
+                        services_dict[unit_name] = {
+                            'name': unit_name[:-8],
+                            'full_name': unit_name,
+                            'load': parts[1],
+                            'active': parts[2],
+                            'sub': parts[3],
+                            'description': description
+                        }
+
+            # Convert to list and apply filters
+            services = list(services_dict.values())
+            
+            if self.current_filter != "all":
+                filtered_services = []
+                for service in services:
+                    if self.current_filter == "running" and service['active'] == "active":
+                        filtered_services.append(service)
+                    elif self.current_filter == "inactive" and service['active'] == "inactive":
+                        filtered_services.append(service)
+                    elif self.current_filter == "failed" and service['sub'] == "failed":
+                        filtered_services.append(service)
+                services = filtered_services
+
+            self.all_services = services
+            self.refresh_display()
             
         except subprocess.CalledProcessError as e:
             print(f"Error loading services: {e}")
@@ -268,8 +325,8 @@ class SystemdManagerWindow(Adw.ApplicationWindow):
     def parse_systemctl_output(self, output):
         """Parse systemctl output"""
         services = []
-        for line in output.splitlines()[1:]:  # Skip header line
-            if not line.strip():
+        for line in output.splitlines():
+            if not line.strip() or line.startswith("UNIT") or "not-found" in line:
                 continue
                 
             parts = line.split(maxsplit=4)
@@ -380,6 +437,28 @@ class SystemdManagerWindow(Adw.ApplicationWindow):
         scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.NEVER)
         scrolled.set_child(details_box)
         row.add_row(scrolled)
+
+        # Create button box for actions
+        button_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        button_box.set_halign(Gtk.Align.END)
+        
+        # Add Follow Log button
+        follow_log_button = Gtk.Button(label="Follow Log")
+        follow_log_button.add_css_class("dark-button")
+        follow_log_button.connect("clicked", self.on_follow_log, service_data['name'])
+        button_box.append(follow_log_button)
+
+        # Add Log button
+        log_button = Gtk.Button(label="Log")
+        log_button.add_css_class("dark-button")
+        log_button.connect("clicked", self.on_show_log, service_data['name'])
+        button_box.append(log_button)
+
+        # Status button
+        status_button = Gtk.Button(label="Status")
+        status_button.add_css_class("dark-button")
+        status_button.connect("clicked", self.on_show_status, service_data['name'])
+        button_box.append(status_button)
 
         return row
 
@@ -600,21 +679,10 @@ class SystemdManagerWindow(Adw.ApplicationWindow):
     def on_show_status(self, button, service_name):
         """Show detailed status of the service"""
         try:
-            # Get the row and its expanded state
-            row = None
-            for child in self.list_box.observe_children():
-                if child.get_title() == service_name:
-                    row = child
-                    break
-            
-            was_expanded = row.get_expanded() if row else False
-            
-            # Check if this is a user service
+            service_file = f"{service_name}.service"
             is_user_service = self.check_if_user_service(service_name)
-            service_name = f"{service_name}.service"
-            
-            # Build the status command based on service type
-            status_cmd = f"systemctl {'--user ' if is_user_service else ''}status {service_name}; read -p 'Press Enter to close...'"
+            # Simple status command without pkexec, just like running it in terminal
+            status_cmd = f"systemctl {'--user ' if is_user_service else ''}status {service_file}; read -p 'Press Enter to close...'"
             
             terminal = self.get_terminal_command()
             if terminal is None:
@@ -636,33 +704,44 @@ class SystemdManagerWindow(Adw.ApplicationWindow):
                 user_data=None
             )
             
-            # Use a callback to restore expanded state after showing status
-            def restore_expanded_state():
-                if was_expanded:
-                    for child in self.list_box.observe_children():
-                        if child.get_title() == service_name[:-8]:
-                            child.set_expanded(True)
-                            break
-                return False
-            
-            GLib.timeout_add(1000, restore_expanded_state)
-            
         except GLib.Error as e:
             self.show_error_dialog(f"Failed to show service status: {e.message}")
 
     def check_if_user_service(self, service_name):
         """Helper method to check if a service is a user service"""
         try:
-            check_cmd = ["systemctl", "--user", "list-units", "--type=service", "--all", "--no-pager", "--plain"]
+            # Check if service exists in system paths first
+            system_paths = [
+                "/etc/systemd/system",
+                "/usr/lib/systemd/system",
+                "/lib/systemd/system",
+                "/usr/local/lib/systemd/system"
+            ]
+            
+            service_file = f"{service_name}.service"
+            
+            # Check system paths first
+            for path in system_paths:
+                if os.path.exists(os.path.join(path, service_file)):
+                    return False  # It's a system service
+            
+            # If not found in system paths, check user paths
+            user_service_path = os.path.expanduser(f"~/.config/systemd/user/{service_file}")
+            if os.path.exists(user_service_path):
+                return True
+            
+            # Final check with systemctl --user
+            check_cmd = ["systemctl", "--user", "list-unit-files", "--type=service", "--all", "--no-pager", "--plain"]
             result = subprocess.run(
                 self.run_host_command(check_cmd),
                 capture_output=True,
                 text=True,
                 check=True
             )
-            # Check if the service name appears in the user services list
-            return any(service_name in line for line in result.stdout.splitlines())
+            return any(service_file in line for line in result.stdout.splitlines())
+            
         except subprocess.CalledProcessError:
+            # If in doubt, assume it's a system service
             return False
 
     def get_terminal_command(self):
@@ -699,6 +778,254 @@ class SystemdManagerWindow(Adw.ApplicationWindow):
                 continue
         return None
 
+    def on_show_log(self, button, service_name):
+        """Show service logs in GNOME Logs"""
+        try:
+            service_file = f"{service_name}.service"
+            is_user_service = self.check_if_user_service(service_name)
+            
+            # Build the command to open GNOME Logs
+            if is_user_service:
+                # For user services, open user journal
+                cmd = ["gnome-logs", "--identifier", service_file]
+            else:
+                # For system services, might need elevated privileges
+                cmd = ["pkexec", "gnome-logs", "--identifier", service_file]
+            
+            # Use run_host_command for Flatpak compatibility
+            cmd = self.run_host_command(cmd)
+            
+            GLib.spawn_async(
+                argv=cmd,
+                flags=GLib.SpawnFlags.SEARCH_PATH | GLib.SpawnFlags.DO_NOT_REAP_CHILD,
+                child_setup=None,
+                user_data=None
+            )
+            
+        except GLib.Error as e:
+            self.show_error_dialog(f"Failed to show logs: {e.message}\nPlease make sure GNOME Logs (gnome-logs) is installed.")
+
+    def on_follow_log(self, button, service_name):
+        """Show real-time service logs using journalctl -fu"""
+        try:
+            service_file = f"{service_name}.service"
+            is_user_service = self.check_if_user_service(service_name)
+            
+            # Build the journalctl command
+            follow_cmd = f"journalctl {'--user ' if is_user_service else ''}-fu {service_file}"
+            
+            terminal = self.get_terminal_command()
+            if terminal is None:
+                self.show_error_dialog("No suitable terminal emulator found. Please install gnome-terminal, xfce4-terminal, or konsole.")
+                return
+            
+            # Build the complete command
+            terminal_cmd = [terminal['binary']]
+            terminal_cmd.extend(terminal['args'])
+            terminal_cmd.append(follow_cmd)
+            
+            # Use run_host_command for Flatpak compatibility
+            cmd = self.run_host_command(terminal_cmd)
+            
+            GLib.spawn_async(
+                argv=cmd,
+                flags=GLib.SpawnFlags.SEARCH_PATH | GLib.SpawnFlags.DO_NOT_REAP_CHILD,
+                child_setup=None,
+                user_data=None
+            )
+            
+        except GLib.Error as e:
+            self.show_error_dialog(f"Failed to show service logs: {e.message}")
+
+class ServiceEditor(Gtk.Window):
+    def __init__(self, parent):
+        super().__init__(title="Create New Service")
+        self.set_default_size(800, 600)
+        self.set_transient_for(parent)
+        
+        # Create main box
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self.set_child(box)
+        
+        # Create header bar
+        header = Gtk.HeaderBar()
+        self.set_titlebar(header)
+        
+        # Add save button
+        save_button = Gtk.Button(label="Save")
+        save_button.connect("clicked", self.on_save_clicked)
+        header.pack_end(save_button)
+        
+        # Create source view
+        source_view = GtkSource.View()
+        source_view.set_show_line_numbers(True)
+        source_view.set_auto_indent(True)
+        source_view.set_indent_width(2)
+        source_view.set_insert_spaces_instead_of_tabs(True)
+        source_view.set_highlight_current_line(True)
+        
+        # Set up buffer with service template
+        buffer = source_view.get_buffer()
+        buffer.set_text(self.get_service_template())
+        
+        # Set up syntax highlighting
+        lang_manager = GtkSource.LanguageManager.get_default()
+        ini_lang = lang_manager.get_language("ini")
+        buffer.set_language(ini_lang)
+        
+        # Add scrolled window
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_vexpand(True)
+        scrolled.set_child(source_view)
+        box.append(scrolled)
+        
+        self.source_view = source_view
+    
+    def get_service_template(self):
+        return """[Unit]
+Description=My Service Description
+# Documentation URL for this service
+Documentation=https://example.com/docs
+
+# Dependencies
+After=network.target                   # Start after network is up
+#Requires=docker.service              # Hard dependency, if needed
+#Wants=network-online.target          # Soft dependency
+#PartOf=some.target                   # Groups services together
+#Conflicts=conflicting.service        # Services that can't run together
+
+[Service]
+# Service type (simple, forking, oneshot, notify, dbus, idle)
+Type=simple
+
+# User and group to run as (comment out to run as root)
+User=username
+Group=groupname
+
+# Working directory
+#WorkingDirectory=/path/to/working/dir
+
+# Environment variables
+#Environment=VAR1=value1
+#Environment=VAR2=value2
+#EnvironmentFile=/etc/myapp/env
+
+# Main process
+ExecStartPre=/bin/mkdir -p /var/run/myapp     # Run before start (optional)
+ExecStart=/usr/bin/myapp --option1 --option2   # Main service command
+#ExecStop=/usr/bin/myapp --stop               # Custom stop command (optional)
+
+# Restart configuration
+Restart=always                        # always, on-failure, on-abnormal, no
+RestartSec=3                         # Time to wait before restart
+#StartLimitIntervalSec=60            # Time window for start limit
+#StartLimitBurst=3                   # Number of restarts allowed in the interval
+
+# Runtime configuration
+#Nice=0                              # Process priority (-20 to 19)
+#LimitNOFILE=65535                   # File descriptor limit
+#TimeoutStartSec=30                  # Start timeout
+#TimeoutStopSec=30                   # Stop timeout
+
+# Security
+#NoNewPrivileges=true                # Prevent privilege escalation
+#ProtectSystem=full                  # Protect system directories
+#ProtectHome=true                    # Protect home directories
+#ReadOnlyDirectories=/etc           # Make directories read-only
+#ReadWriteDirectories=/var/lib/myapp # Allow write access to specific dirs
+
+[Install]
+# Where to install the service (common targets: multi-user.target, graphical.target)
+WantedBy=multi-user.target
+
+# For user services, use:
+#WantedBy=default.target
+"""
+
+    def on_save_clicked(self, button):
+        buffer = self.source_view.get_buffer()
+        text = buffer.get_text(buffer.get_start_iter(), buffer.get_end_iter(), True)
+        
+        # Create modern file chooser dialog
+        dialog = Gtk.FileChooserDialog(
+            title="Save Service File",
+            transient_for=self,
+            action=Gtk.FileChooserAction.SAVE
+        )
+        
+        # Add buttons using modern approach
+        dialog.add_button("_Cancel", Gtk.ResponseType.CANCEL)
+        dialog.add_button("_Save", Gtk.ResponseType.ACCEPT)
+        
+        # Set up file filters
+        filters = Gtk.FileFilter()
+        filters.set_name("Service files")
+        filters.add_pattern("*.service")
+        dialog.set_filter(filters)
+        
+        # Set default save location to /etc/systemd/system/
+        dialog.set_current_folder(Gio.File.new_for_path("/etc/systemd/system"))
+        
+        # Suggest default filename
+        dialog.set_current_name("myservice.service")
+        
+        # Show the dialog and handle response
+        dialog.connect("response", self._on_save_response, text)
+        dialog.present()
+
+    def _on_save_response(self, dialog, response, text):
+        if response == Gtk.ResponseType.ACCEPT:
+            try:
+                file = dialog.get_file()
+                if file:
+                    file_path = file.get_path()
+                    home_dir = os.path.expanduser("~")
+                    
+                    # Check if saving to user's home directory or its subdirectories
+                    if file_path.startswith(home_dir):
+                        # Direct save without pkexec for user directory
+                        with open(file_path, 'w') as f:
+                            f.write(text)
+                        os.chmod(file_path, 0o644)  # Set permissions without pkexec
+                    else:
+                        # Use pkexec for system directories
+                        with open('/tmp/temp_service_file', 'w') as temp_file:
+                            temp_file.write(text)
+                        
+                        # Build the mv command
+                        cmd = ["pkexec", "mv", "/tmp/temp_service_file", file_path]
+                        if SystemdManagerWindow.is_running_in_flatpak():
+                            cmd = ["flatpak-spawn", "--host"] + cmd
+                        
+                        # Execute the command
+                        subprocess.run(cmd, check=True)
+                        
+                        # Set proper permissions
+                        chmod_cmd = ["pkexec", "chmod", "644", file_path]
+                        if SystemdManagerWindow.is_running_in_flatpak():
+                            chmod_cmd = ["flatpak-spawn", "--host"] + chmod_cmd
+                        subprocess.run(chmod_cmd, check=True)
+                    
+                    # Show success message
+                    success_dialog = Adw.MessageDialog(
+                        transient_for=self,
+                        heading="Success",
+                        body=f"Service file saved successfully to {file_path}\nDon't forget to reload systemd daemon to apply changes."
+                    )
+                    success_dialog.add_response("ok", "_OK")
+                    success_dialog.present()
+                    
+            except Exception as e:
+                error_dialog = Adw.MessageDialog(
+                    transient_for=self,
+                    heading="Error",
+                    body=f"Error saving file: {str(e)}"
+                )
+                error_dialog.add_response("ok", "_OK")
+                error_dialog.present()
+        
+        dialog.destroy()
+
 class SystemdManagerApp(Adw.Application):
     def __init__(self):
         super().__init__(application_id="io.github.mfat.systemdpilot",
@@ -707,6 +1034,8 @@ class SystemdManagerApp(Adw.Application):
         self.connect('shutdown', self.on_shutdown)
         
         self.set_accels_for_action("win.search", ["<Control>f"])
+        self.set_accels_for_action("app.new_service", ["<Control>n"])
+        self.set_accels_for_action("app.reload", ["<Control>r"])
         
         # Add reload action
         reload_action = Gio.SimpleAction.new("reload", None)
@@ -721,6 +1050,11 @@ class SystemdManagerApp(Adw.Application):
         about_action = Gio.SimpleAction.new("about", None)
         about_action.connect("activate", self.on_about_action)
         self.add_action(about_action)
+
+        # Add new service action
+        new_service_action = Gio.SimpleAction.new("new_service", None)
+        new_service_action.connect("activate", self.on_new_service_clicked)
+        self.add_action(new_service_action)
 
     def on_activate(self, app):
         win = SystemdManagerWindow(application=app)
@@ -757,6 +1091,10 @@ class SystemdManagerApp(Adw.Application):
             "https://github.com/mfat/systemd-pilot/issues",
             Gdk.CURRENT_TIME
         )
+
+    def on_new_service_clicked(self, action, param):
+        editor = ServiceEditor(self.get_active_window())
+        editor.present()
 
 app = SystemdManagerApp()
 app.run(None)
