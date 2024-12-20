@@ -23,6 +23,11 @@ finish-args:
   - --talk-name=org.freedesktop.systemd1
   - --filesystem=xdg-config/gtk-3.0:ro
   - --filesystem=xdg-documents
+  - --talk-name=org.freedesktop.DBus
+  - --system-talk-name=org.freedesktop.DBus
+  - --socket=system-bus
+  - --socket=session-bus
+
 modules:
   - name: gnome-logs
     buildsystem: meson
@@ -31,7 +36,7 @@ modules:
     sources:
       - type: archive
         url: https://download.gnome.org/sources/gnome-logs/45/gnome-logs-45.0.tar.xz
-        sha256: 0c5d6a866d0f5b3a99d0c891ebd91b3c74bfb0a0f1c0d1f6c7c6e6f7f7c2e4d
+        sha256: b28a06ea5c98bd17f2873b507f085b0ca0de9810136611f4f2eeb098614ece52
 
   - name: gtksourceview5
     buildsystem: meson
@@ -41,7 +46,7 @@ modules:
     sources:
       - type: archive
         url: https://download.gnome.org/sources/gtksourceview/5.8/gtksourceview-5.8.0.tar.xz
-        sha256: 110dd4c20def21886fbce9ae93c8afd39915e8f7a6c6c3c68765c5e1dd99be19
+        sha256: 110dd4c20def21886fbf777298fe0ef8cc2ad6023b8f36c7424411a414818933
 
   - name: systemd-pilot
     buildsystem: simple
