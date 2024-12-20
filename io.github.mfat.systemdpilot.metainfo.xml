@@ -1,38 +1,53 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
   <id>io.github.mfat.systemdpilot</id>
-  <metadata_license>CC0-1.0</metadata_license>
-  <project_license>GPL-3.0+</project_license>
+  
   <name>systemd Pilot</name>
-  <summary>Manage systemd services</summary>
+  <summary>systemd service manager </summary>
+  
+  <metadata_license>MIT</metadata_license>
+  <project_license>AGPL-3.0-or-later</project_license>
+  
   <description>
     <p>
-      systemd Pilot is a GTK4 application that helps you manage systemd services with a user-friendly interface. Features include:
+      systemd Pilot is a desktop application for managing systemd services on GNU/linux systems. Features:
     </p>
-    <ul>
-      <li>View and manage system and user services</li>
-      <li>Start, stop, restart services</li>
-      <li>Enable or disable services</li>
-      <li>View detailed service status</li>
-      <li>Filter services by status</li>
-      <li>Search functionality</li>
-    </ul>
+    <p>
+      List system and user services
+    </p>
+    <p>
+      Quicly deploy and run a systemd service
+    </p>
+    <p>
+      Filter by running state
+    </p>
+    <p>
+      Start, Stop, Restart services, show status
+    </p>
+    <p>
+      Create override configuration for any unit file using the edit button
+    </p>
+    <p>
+      Easy search. Just start typing and the app will find relevant services
+    </p>
+    <p>
+      Lightweight and easy on system resources (just a single Python script)
+    </p>
+    <p>
+      Available as deb, rpm, flatpak and AppImage
+    </p>
+    <p>
+      Full integration into GNOME desktop (libadwaita)
+    </p>
+    <p>
+      
+    </p>
   </description>
+  
   <launchable type="desktop-id">io.github.mfat.systemdpilot.desktop</launchable>
   <screenshots>
     <screenshot type="default">
-      <caption>Main window showing service list</caption>
       <image>https://raw.githubusercontent.com/mfat/systemd-pilot/main/screenshots/main.png</image>
     </screenshot>
   </screenshots>
-  <url type="homepage">https://github.com/mfat/systemd-pilot</url>
-  <url type="bugtracker">https://github.com/mfat/systemd-pilot/issues</url>
-  <content_rating type="oars-1.1" />
-  <releases>
-    <release version="2.0.0" date="2024-12-20">
-      <description>
-        <p>Initial Flatpak release</p>
-      </description>
-    </release>
-  </releases>
-</component> 
+</component>
