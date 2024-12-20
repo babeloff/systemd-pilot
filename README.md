@@ -20,5 +20,9 @@ systemd Pilot is a desktop application for managing systemd services on GNU/linu
 - Download from the [releases](https://github.com/mfat/systemd-pilot/releases) section 
 - Flatpak installation:
 
+## Support development
+Bitcoin: `bc1qqtsyf0ft85zshsnw25jgsxnqy45rfa867zqk4t`
+
+Doge:  `DRzNb8DycFD65H6oHNLuzyTzY1S5avPHHx`
 
   
