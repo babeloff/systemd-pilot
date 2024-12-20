@@ -1316,8 +1316,13 @@ WantedBy=multi-user.target
         filters.add_pattern("*.service")
         dialog.set_filter(filters)
         
-        # Set default save location to /etc/systemd/system/
-        dialog.set_current_folder(Gio.File.new_for_path("/etc/systemd/system"))
+        # Set default save location based on environment
+        if SystemdManagerWindow.is_running_in_flatpak():
+            system_path = "/run/host/etc/systemd/system"
+        else:
+            system_path = "/etc/systemd/system"
+        
+        dialog.set_current_folder(Gio.File.new_for_path(system_path))
         
         # Suggest default filename
         dialog.set_current_name("myservice.service")

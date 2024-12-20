@@ -3,6 +3,15 @@ runtime: org.gnome.Platform
 runtime-version: '46'
 sdk: org.gnome.Sdk
 command: systemd-pilot
+
+metadata:
+  license: GPL-3.0+  # or your chosen license
+  description: A GTK4 systemd service manager
+  urls:
+    homepage: https://github.com/mfat/systemd-pilot
+    bugtracker: https://github.com/mfat/systemd-pilot/issues
+    donation: https://github.com/sponsors/mfat  # if you have one
+
 finish-args:
   - --share=ipc
   - --socket=fallback-x11
@@ -13,6 +22,7 @@ finish-args:
   - --system-talk-name=org.freedesktop.login1
   - --talk-name=org.freedesktop.systemd1
   - --filesystem=xdg-config/gtk-3.0:ro
+  - --filesystem=xdg-documents
 modules:
   - name: gnome-logs
     buildsystem: meson
