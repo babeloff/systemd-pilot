@@ -18,11 +18,11 @@ systemd Pilot is a desktop application for managing systemd services on GNU/linu
 - Full integration into GNOME desktop (libadwaita)
   
 ## Download
-- Download from the [releases](https://github.com/mfat/systemd-pilot/releases) section and download the package for your distribution. Alternatively, you can download and run the executable `systemd-pilot` on any GNU/linux system with at least python 3.10 installed. See requirements below. 
+- Download from the [releases](https://github.com/mfat/systemd-pilot/releases) section the package for your distribution. Alternatively, you can download the flatpak or the executables  `systemd-pilot` or `systemd-pilot-legacy`(for older systems).
 
 - For older systems the Flatpak and the executable are recommended. 
 
-## Requirements (only needed if you want to run from source)
+## Requirements
 
 Python modules:
 `PyGObject`
