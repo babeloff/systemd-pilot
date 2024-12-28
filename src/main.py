@@ -1,1289 +1,1921 @@
 #!/usr/bin/env python3
+
 import gi
-gi.require_version('Gtk', '4.0')
-gi.require_version('Adw', '1')
-gi.require_version('GtkSource', '5')
-from gi.repository import Gtk, Adw, GLib, Gio, Gdk, Pango, GtkSource
+gi.require_version('Gtk', '3.0')
+gi.require_version('GtkSource', '4')
+from gi.repository import Gtk, GLib, Gio, Gdk, Pango, GtkSource
+import paramiko
+import keyring
+import json
+import threading
+import logging
+from pathlib import Path
+from typing import Dict, List, Optional
+import asyncio
+from dataclasses import dataclass
 import subprocess
+import socket
+from rich.console import Console
+from rich.text import Text
+from io import StringIO
 import os
-from datetime import datetime
+import re
 
-APP_VERSION = "2.0.0"
+# Add at the top of the file, after imports
+APP_NAME = "systemd Pilot"
+APP_VERSION = "3.0.0"
+APP_DESCRIPTION = """
+A graphical tool for managing systemd services locally and remotely.
 
-class SystemdManagerWindow(Adw.ApplicationWindow):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.set_default_size(800, 600)
-        self.set_title("systemd Pilot")
-        self.all_services = []
-        self.is_root = os.geteuid() == 0
-        self.current_filter = "all"
-        self.show_only_loaded = True
+"""
+APP_AUTHORS = ["mFat"]
+APP_WEBSITE = "https://github.com/mfat/systemd-pilot"
+APP_LICENSE = "GNU General Public License v3.0"
+APP_ID = "io.github.mfat.systemdpilot"
 
-        # Set up search action
-        search_action = Gio.SimpleAction.new("search", None)
-        search_action.connect("activate", self.toggle_search)
-        self.add_action(search_action)
+@dataclass
+class RemoteHost:
+    name: str
+    hostname: str
+    username: str
+    auth_type: str  # 'password' or 'key'
+    key_path: Optional[str] = None
 
-        # Add show_loaded action
-        show_loaded_action = Gio.SimpleAction.new_stateful(
-            "show_loaded",
-            None,
-            GLib.Variant.new_boolean(True)
-        )
-        show_loaded_action.connect("change-state", self.on_show_loaded_changed)
-        self.add_action(show_loaded_action)
+def get_system_theme_preference():
+    """Detect system theme preference"""
+    # Try gsettings first
+    try:
+        settings = Gio.Settings.new("org.gnome.desktop.interface")
+        gtk_theme = settings.get_string("gtk-theme")
+        return "dark" in gtk_theme.lower()
+    except:
+        pass
+    
+    # Fallback to environment variable
+    gtk_theme = os.getenv("GTK_THEME", "")
+    return "dark" in gtk_theme.lower()
 
-        # Add show_log action
-        show_log_action = Gio.SimpleAction.new_stateful(
-            "show_log",
-            None,
-            GLib.Variant.new_boolean(False)
-        )
-        show_log_action.connect("change-state", self.on_show_log_changed)
-        self.add_action(show_log_action)
-
-        # Main layout
-        self.main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        self.set_content(self.main_box)
-
-        # Header bar
-        header = Adw.HeaderBar()
-        self.main_box.append(header)
-
-        # Search button
-        self.search_button = Gtk.ToggleButton(icon_name="system-search-symbolic")
-        self.search_button.set_tooltip_text("Search services (Ctrl+F)")
-        self.search_button.connect("toggled", self.on_search_toggled)
-        header.pack_end(self.search_button)
-
-        # Create menu
-        menu = Gio.Menu()
-        menu.append("New Service", "app.new_service")
-        menu.append("Reload Configuration", "app.reload")
-        menu.append("Show Only Loaded Units", "win.show_loaded")
-        menu.append("Show Log", "win.show_log")
-        menu.append("Feedback", "app.feedback")
-        menu.append("About", "app.about")
-
-        # Menu button
-        menu_button = Gtk.MenuButton()
-        menu_button.set_icon_name("open-menu-symbolic")
-        menu_button.set_menu_model(menu)
-        menu_button.set_tooltip_text("Main menu")
-        header.pack_end(menu_button)
-
-        # Create filter buttons in a ribbon
-        filter_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        filter_box.add_css_class("toolbar")
-        filter_box.add_css_class("red-background")  # Add custom CSS class
-        filter_box.set_margin_start(6)
-        filter_box.set_margin_end(6)
-        filter_box.set_margin_top(6)
-        filter_box.set_margin_bottom(6)
-
-        # All services filter
-        all_button = Gtk.ToggleButton(label="System")
-        all_button.set_tooltip_text("Show all system services")
-        all_button.set_active(True)
-        all_button.connect("toggled", self.on_filter_changed, "all")
-        filter_box.append(all_button)
-
-        # Running services filter
-        running_button = Gtk.ToggleButton(label="Running")
-        running_button.set_tooltip_text("Show only running services")
-        running_button.connect("toggled", self.on_filter_changed, "running")
-        filter_box.append(running_button)
-
-        # Inactive services filter
-        inactive_button = Gtk.ToggleButton(label="Inactive")
-        inactive_button.set_tooltip_text("Show only inactive services")
-        inactive_button.connect("toggled", self.on_filter_changed, "inactive")
-        filter_box.append(inactive_button)
-
-        # Failed services filter
-        failed_button = Gtk.ToggleButton(label="Failed")
-        failed_button.set_tooltip_text("Show only failed services")
-        failed_button.connect("toggled", self.on_filter_changed, "failed")
-        filter_box.append(failed_button)
-
-        # User services filter (moved to end)
-        user_button = Gtk.ToggleButton(label="User")
-        user_button.set_tooltip_text("Show user services")
-        user_button.connect("toggled", self.on_filter_changed, "user")
-        filter_box.append(user_button)
-
-        # Store filter buttons for toggling
-        self.filter_buttons = {
-            "all": all_button,
-            "running": running_button,
-            "inactive": inactive_button,
-            "failed": failed_button,
-            "user": user_button
-        }
-
-        self.main_box.append(filter_box)
-
-        # Search bar
-        self.search_bar = Gtk.SearchBar()
-        self.search_entry = Gtk.SearchEntry()
-        self.search_entry.set_hexpand(True)
-        self.search_entry.connect("search-changed", self.on_search_changed)
-        self.search_bar.set_child(self.search_entry)
-        self.search_bar.set_key_capture_widget(self)
-        self.search_bar.connect_entry(self.search_entry)
-        self.main_box.append(self.search_bar)
-
-        # Create paned container for main content and log
-        self.paned = Gtk.Paned(orientation=Gtk.Orientation.VERTICAL)
-        self.paned.set_wide_handle(True)
-        self.paned.set_resize_start_child(False)
-        self.paned.set_resize_end_child(True)
-        self.paned.set_shrink_start_child(False)
-        self.paned.set_shrink_end_child(True)
-        self.main_box.append(self.paned)
-
-        # Create main content box (for list)
-        content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        content_box.set_vexpand(True)
-        self.paned.set_start_child(content_box)
-
-        # Create list box and scrolled window
-        scrolled = Gtk.ScrolledWindow()
-        scrolled.set_vexpand(True)
-        self.list_box = Gtk.ListBox()
-        self.list_box.set_selection_mode(Gtk.SelectionMode.NONE)
-        self.list_box.add_css_class("boxed-list")
-        self.list_box.set_filter_func(self.filter_services)
-        scrolled.set_child(self.list_box)
-
-        # Create spinner overlay
-        self.spinner_overlay = Gtk.Overlay()
-        self.spinner_overlay.set_child(scrolled)
-
-        # Add spinner
-        self.spinner = Gtk.Spinner()
-        self.spinner.set_size_request(24, 24)
-        self.spinner.set_halign(Gtk.Align.CENTER)
-        self.spinner.set_valign(Gtk.Align.CENTER)
-        self.spinner_overlay.add_overlay(self.spinner)
-
-        # Add spinner box for initial loading
-        self.spinner_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        self.spinner_box.set_valign(Gtk.Align.CENTER)
-        self.spinner_box.set_vexpand(True)
+class SystemdManagerWindow(Gtk.Window):
+    def __init__(self):
+        super().__init__(title=f"{APP_NAME} v{APP_VERSION}")
+        self.set_default_size(1000, 600)
         
-        loading_spinner = Gtk.Spinner()
-        loading_spinner.set_size_request(32, 32)
-        self.spinner_box.append(loading_spinner)
+        # Initialize theme settings
+        self.settings = Gtk.Settings.get_default()
+        self.is_dark_mode = get_system_theme_preference()
+        self.settings.set_property("gtk-application-prefer-dark-theme", self.is_dark_mode)
         
-        loading_label = Gtk.Label(label="Loading services...")
-        self.spinner_box.append(loading_label)
-        
-        self.list_box.append(self.spinner_box)
-        loading_spinner.start()
-
-        # Add overlay to content box
-        content_box.append(self.spinner_overlay)
-
-        # Initialize log viewer variables as None
-        self.log_box = None
-        self.log_buffer = None
-        self.log_view = None
-
-        # Set initial position after window is realized
-        self.connect('realize', self.on_window_realize)
-
-        # Load services after window is shown
-        GLib.idle_add(self.load_services)
-
-        # Add CSS provider
-        css_provider = Gtk.CssProvider()
-        css_provider.load_from_data(b"""
-            .dark {
-                background-color: #303030;
-                border-radius: 6px;
-                padding: 6px;
-            }
-            .white {
-                color: white;
-            }
-            .dark-button {
-                background: #1a1a1a;
-                color: white;
-                border: none;
-                box-shadow: none;
-                text-shadow: none;
-                -gtk-icon-shadow: none;
-                outline: none;
-                border-radius: 4px;
-                padding: 8px 12px;
-                min-height: 0;
-                #min-width: 100px;
-                margin: 2px;
-            }
-            .dark-button:hover {
-                background: #2a2a2a;
-            }
-            .dark-button:active {
-                background: #000000;
-            }
-            row {
-                padding: 6px;
-            }
-            .expander-row {
-                padding: 6px;
-            }
-            .expander-row > box > label {
-                font-weight: bold;
-                font-size: 1.2em;
-            }
-            .service-active {
-                color: #73d216;
-            }
-            .service-inactive {
-                color: #cc0000;
-            }
-            .error-text text {
-                background-color: #2a0000;
-                color: #ff8080;
-                padding: 8px;
-            }
-            .log-text {
-                background-color: #000000;
-                color: #ffffff;
-                border: 1px solid rgba(255, 255, 255, 0.1);
-            }
-            .log-text text {
-                background-color: #000000;
-                color: #ffffff;
-                padding: 8px;
-                font-family: monospace;
-            }
-            .log-text textview {
-                background-color: #000000;
-                color: #ffffff;
-            }
-            .log-text textview text {
-                background-color: #000000;
-                color: #ffffff;
-            }
-            paned > separator {
-                background-color: rgba(255, 255, 255, 0.1);
-                min-height: 6px;
-            }
-            
-            paned > separator:hover {
-                background-color: rgba(255, 255, 255, 0.2);
-            }
-        """)
-        
-        Gtk.StyleContext.add_provider_for_display(
-            Gdk.Display.get_default(),
-            css_provider,
+        # Initialize CSS provider
+        self.css_provider = Gtk.CssProvider()
+        Gtk.StyleContext.add_provider_for_screen(
+            Gdk.Screen.get_default(),
+            self.css_provider,
             Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
         )
-
-        style_manager = Adw.StyleManager.get_default()
-        style_manager.set_color_scheme(Adw.ColorScheme.PREFER_DARK)
-
-        # Hide log view by default
-        GLib.idle_add(lambda: self.paned.set_position(self.paned.get_allocated_height()))
-
-    @staticmethod
-    def is_running_in_flatpak():
-        """Check if the application is running inside Flatpak"""
-        return os.path.exists("/.flatpak-info")
-
-    def run_host_command(self, cmd):
-        """Run a command on the host system, handling Flatpak if needed"""
-        if SystemdManagerWindow.is_running_in_flatpak():
-            return ["flatpak-spawn", "--host"] + cmd
-        return cmd
-
-    def load_services(self):
-        """Load systemd services based on current filter"""
-        try:
-            if self.spinner_box.get_parent():
-                self.list_box.remove(self.spinner_box)
-
-            # For user filter, handle separately
-            if self.current_filter == "user":
-                user_cmd = ["systemctl", "--user", "list-units", "--type=service", "--all", "--no-pager", "--plain"]
-                if self.show_only_loaded:
-                    user_cmd.extend(["--state=loaded"])
-                user_output = subprocess.run(
-                    self.run_host_command(user_cmd),
-                    capture_output=True,
-                    text=True,
-                    check=True
-                ).stdout
-                self.parse_systemctl_output(user_output)
-                return
-
-            services = []
-
-            if not self.show_only_loaded:
-                # Get all unit files when showing all units
-                unit_files_cmd = ["systemctl", "list-unit-files", "--type=service", "--no-pager", "--plain"]
-                unit_files_output = subprocess.run(
-                    self.run_host_command(unit_files_cmd),
-                    capture_output=True,
-                    text=True,
-                    check=True
-                ).stdout
-
-                # Parse unit files to get all services
-                for line in unit_files_output.splitlines():
-                    if not line.strip() or line.startswith("UNIT FILE"):
-                        continue
-                    parts = line.split(maxsplit=2)
-                    if len(parts) >= 2:
-                        unit_name = parts[0]
-                        if unit_name.endswith('.service'):
-                            services.append({
-                                'name': unit_name[:-8],
-                                'full_name': unit_name,
-                                'load': parts[1],
-                                'active': 'inactive',
-                                'sub': 'dead',
-                                'description': ''
-                            })
-
-            # Get active units with their current state
-            if self.current_filter == "running":
-                cmd = ["systemctl", "list-units", "--type=service", "--state=active", "--no-pager", "--plain"]
-            elif self.current_filter == "inactive":
-                cmd = ["systemctl", "list-units", "--type=service", "--state=inactive", "--no-pager", "--plain"]
-            elif self.current_filter == "failed":
-                cmd = ["systemctl", "list-units", "--type=service", "--state=failed", "--no-pager", "--plain"]
-            else:
-                cmd = ["systemctl", "list-units", "--type=service", "--all", "--no-pager", "--plain"]
-                if self.show_only_loaded:
-                    cmd.extend(["--state=loaded"])
-
-            units_output = subprocess.run(
-                self.run_host_command(cmd),
-                capture_output=True,
-                text=True,
-                check=True
-            ).stdout
-
-            # Update or add services from list-units output
-            for line in units_output.splitlines():
-                if not line.strip() or line.startswith("UNIT"):
-                    continue
-                parts = line.split(maxsplit=4)
-                if len(parts) >= 4:
-                    unit_name = parts[0]
-                    if unit_name.endswith('.service'):
-                        service_data = {
-                            'name': unit_name[:-8],
-                            'full_name': unit_name,
-                            'load': parts[1],
-                            'active': parts[2],
-                            'sub': parts[3],
-                            'description': parts[4] if len(parts) > 4 else ''
-                        }
-                        # Update existing service or add new one
-                        if not self.show_only_loaded:
-                            # Update existing service if found
-                            for service in services:
-                                if service['full_name'] == unit_name:
-                                    service.update(service_data)
-                                    break
-                            else:
-                                # Add if not found
-                                services.append(service_data)
-                        else:
-                            services.append(service_data)
-
-            self.all_services = services
-            self.refresh_display()
-            
-        except subprocess.CalledProcessError as e:
-            print(f"Error loading services: {e}")
-            self.show_error_dialog("Failed to load service information")
-
-    def parse_systemctl_output(self, output):
-        """Parse systemctl output"""
-        services = []
-        for line in output.splitlines():
-            if not line.strip() or line.startswith("UNIT") or "not-found" in line:
-                continue
-                
-            parts = line.split(maxsplit=4)
-            if len(parts) >= 4:
-                unit_name = parts[0]
-                if unit_name.endswith('.service'):
-                    service_data = {
-                        'name': unit_name[:-8],  # Remove '.service' suffix
-                        'full_name': unit_name,  # Keep full name for systemctl commands
-                        'load': parts[1],
-                        'active': parts[2],
-                        'sub': parts[3],
-                        'description': parts[4] if len(parts) > 4 else ''
-                    }
-                    services.append(service_data)
-
-        self.all_services = services
-        self.refresh_display()
-
-    def create_service_row(self, service_data):
-        """Create a row for a service"""
-        row = Adw.ExpanderRow(title=service_data['name'])
         
-        # Add handler for expand/collapse
-        row.connect('notify::expanded', self.on_row_expanded)
+        # Apply initial theme
+        self.update_custom_theme()
         
-        # Set the service name as title
-        row.set_title(service_data['name'])
-        
-        # Set the status as subtitle
-        status_class = "service-active" if service_data['active'] == "active" else "service-inactive"
-        status_text = f"{service_data['active']} ({service_data['sub']})"
-        row.set_subtitle(status_text)
-
-        # Details box
-        details_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        details_box.set_margin_start(12)
-        details_box.set_margin_end(12)
-        details_box.set_margin_top(6)
-        details_box.set_margin_bottom(6)
-        details_box.add_css_class("dark")
-
-        # Add service details
-        def create_detail_label(text):
-            # Special handling for running state in details
-            if "Sub-state: running" in text:
-                prefix, _ = text.split("running", 1)
-                label = Gtk.Label(xalign=0)
-                label.set_markup(f"{prefix}<span foreground='#73d216'>running</span>")
-            else:
-                label = Gtk.Label(label=text, xalign=0)
-            
-            label.set_wrap(True)
-            label.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
-            label.set_hexpand(True)
-            label.add_css_class("white")
-            return label
-
-        details_box.append(create_detail_label(f"Description: {service_data['description']}"))
-        details_box.append(create_detail_label(f"Load: {service_data['load']}"))
-        details_box.append(create_detail_label(f"Active: {service_data['active']}"))
-        details_box.append(create_detail_label(f"Sub-state: {service_data['sub']}"))
-        
-        # Get autostart status
-        try:
-            cmd = ["systemctl", "is-enabled", f"{service_data['name']}.service"]
-            if SystemdManagerWindow.is_running_in_flatpak():
-                cmd = ["flatpak-spawn", "--host"] + cmd
-            autostart = subprocess.run(cmd, capture_output=True, text=True).stdout.strip()
-        except:
-            autostart = "unknown"
-        details_box.append(create_detail_label(f"Autostart: {autostart}"))
-
-
-
-        # Add action buttons
-        buttons_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        buttons_box.set_margin_top(6)
-        
-        status_button = Gtk.Button(label="Status")
-        status_button.set_tooltip_text("Show detailed service status")
-        status_button.connect("clicked", self.on_show_status, service_data['name'])
-        status_button.add_css_class("dark-button")
-        buttons_box.append(status_button)
-
-        start_button = Gtk.Button(label="Start")
-        start_button.connect("clicked", self.on_start_service, service_data['name'])
-        start_button.add_css_class("dark-button")
-        buttons_box.append(start_button)
-
-        stop_button = Gtk.Button(label="Stop")
-        stop_button.connect("clicked", self.on_stop_service, service_data['name'])
-        stop_button.add_css_class("dark-button")
-        buttons_box.append(stop_button)
-
-        restart_button = Gtk.Button(label="Restart")
-        restart_button.connect("clicked", self.on_restart_service, service_data['name'])
-        restart_button.add_css_class("dark-button")
-        buttons_box.append(restart_button)
-
-        enable_button = Gtk.Button(label="Enable")
-        enable_button.connect("clicked", self.on_enable_service, service_data['name'])
-        enable_button.add_css_class("dark-button")
-        buttons_box.append(enable_button)
-
-        disable_button = Gtk.Button(label="Disable")
-        disable_button.connect("clicked", self.on_disable_service, service_data['name'])
-        disable_button.add_css_class("dark-button")
-        buttons_box.append(disable_button)
-
-        edit_button = Gtk.Button(label="Edit")
-        edit_button.set_tooltip_text("Override settings for this unit")
-        edit_button.connect("clicked", self.on_edit_service, service_data['name'])
-        edit_button.add_css_class("dark-button")
-        buttons_box.append(edit_button)
-
-        # Add Log button
-        log_button = Gtk.Button(label="Log")
-        log_button.set_tooltip_text("Show real-time service logs")
-        log_button.connect("clicked", self.on_follow_log, service_data['name'])
-        log_button.add_css_class("dark-button")
-        buttons_box.append(log_button)
-
-        details_box.append(buttons_box)
-
-        # Add details to row
-        scrolled = Gtk.ScrolledWindow()
-        scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.NEVER)
-        scrolled.set_child(details_box)
-        row.add_row(scrolled)
-
-        # Create button box for actions
-        button_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        button_box.set_halign(Gtk.Align.END)
-        
-        # Add Follow Log button
-        follow_log_button = Gtk.Button(label="Follow Log")
-        follow_log_button.add_css_class("dark-button")
-        follow_log_button.connect("clicked", self.on_follow_log, service_data['name'])
-        button_box.append(follow_log_button)
-
-        # Add Log button
-        log_button = Gtk.Button(label="Log")
-        log_button.add_css_class("dark-button")
-        log_button.connect("clicked", self.on_show_log, service_data['name'])
-        button_box.append(log_button)
-
-        # Status button
-        status_button = Gtk.Button(label="Status")
-        status_button.add_css_class("dark-button")
-        status_button.connect("clicked", self.on_show_status, service_data['name'])
-        button_box.append(status_button)
-
-        return row
-
-    def run_systemctl_command(self, command, service_name):
-        """Run a systemctl command with pkexec if needed"""
-        try:
-            # Get the row and its expanded state
-            row = None
-            scrolled_window = None
-            scroll_value = None
-            
-            # Find the scrolled window
-            for widget in self.main_box:
-                if isinstance(widget, Gtk.ScrolledWindow):
-                    scrolled_window = widget
-                    vadjustment = scrolled_window.get_vadjustment()
-                    scroll_value = vadjustment.get_value()
-                    break
-            
-            # Find the row
-            for child in self.list_box.observe_children():
-                if child.get_title() == service_name:
-                    row = child
-                    break
-            
-            was_expanded = row.get_expanded() if row else False
-            
-            # Check if this is a user service
-            is_user_service = self.check_if_user_service(service_name)
-            service_name = f"{service_name}.service"
-            
-            # Build command based on service type
-            if is_user_service:
-                cmd = ["systemctl", "--user", command, service_name]
-            else:
-                cmd = ["systemctl", command, service_name]
-                if not self.is_root:
-                    cmd.insert(0, "pkexec")
-            
-            # Log the command being executed
-            self.log_message(f"Running command: {' '.join(cmd)}")
-            
-            # Run command and capture output
-            result = subprocess.run(
-                self.run_host_command(cmd),
-                capture_output=True,
-                text=True,
-                check=True
-            )
-            
-            # Log stdout if any
-            if result.stdout:
-                self.log_message(f"Output:\n{result.stdout.strip()}")
-            
-            # Get and log service status
-            status_cmd = ["systemctl"]
-            if is_user_service:
-                status_cmd.append("--user")
-            status_cmd.extend(["status", service_name])
-            
-            status_result = subprocess.run(
-                self.run_host_command(status_cmd),
-                capture_output=True,
-                text=True,
-                check=False  # Don't fail on non-zero exit code
-            )
-            
-            # Log status output
-            if status_result.stdout:
-                self.log_message(f"Status:\n{status_result.stdout.strip()}")
-            
-            # Use a callback to refresh all services
-            def refresh_and_restore():
-                self.refresh_data()
-                if was_expanded:
-                    for child in self.list_box.observe_children():
-                        if child.get_title() == service_name[:-8]:
-                            child.set_expanded(True)
-                            if scrolled_window and scroll_value is not None:
-                                GLib.idle_add(lambda: scrolled_window.get_vadjustment().set_value(scroll_value))
-                            break
-                return False
-            
-            GLib.timeout_add(1000, refresh_and_restore)
-            
-        except subprocess.CalledProcessError as e:
-            error_msg = f"Command failed: {e}"
-            if e.stderr:
-                error_msg += f"\nError output:\n{e.stderr.decode()}"
-            self.show_error_dialog(error_msg)
-            self.log_message(error_msg, "ERROR")
-
-    def on_start_service(self, button, service_name):
-        self.run_systemctl_command("start", service_name)
-
-    def on_stop_service(self, button, service_name):
-        self.run_systemctl_command("stop", service_name)
-
-    def on_restart_service(self, button, service_name):
-        self.run_systemctl_command("restart", service_name)
-
-    def on_enable_service(self, button, service_name):
-        self.run_systemctl_command("enable", service_name)
-
-    def on_disable_service(self, button, service_name):
-        self.run_systemctl_command("disable", service_name)
-
-    def on_edit_service(self, button, service_name):
-        """Open systemctl edit for the service"""
-        try:
-            # Get the row and its expanded state
-            row = None
-            for child in self.list_box.observe_children():
-                if child.get_title() == service_name:
-                    row = child
-                    break
-            
-            was_expanded = row.get_expanded() if row else False
-            
-            # Check if this is a user service
-            is_user_service = self.check_if_user_service(service_name)
-            service_name = f"{service_name}.service"
-            
-            # Build the edit command based on service type
-            if is_user_service:
-                edit_cmd = f"systemctl --user edit {service_name}; read -p 'Press Enter to close...'"
-            else:
-                edit_cmd = f"pkexec systemctl edit {service_name}; read -p 'Press Enter to close...'"
-            
-            terminal = self.get_terminal_command()
-            if terminal is None:
-                self.show_error_dialog("No suitable terminal emulator found. Please install gnome-terminal, xfce4-terminal, or konsole.")
-                return
-            
-            # Build the complete command
-            terminal_cmd = [terminal['binary']]
-            terminal_cmd.extend(terminal['args'])
-            terminal_cmd.append(edit_cmd)
-            
-            # Use run_host_command for the complete command
-            cmd = self.run_host_command(terminal_cmd)
-            
-            GLib.spawn_async(
-                argv=cmd,
-                flags=GLib.SpawnFlags.SEARCH_PATH | GLib.SpawnFlags.DO_NOT_REAP_CHILD,
-                child_setup=None,
-                user_data=None
-            )
-            
-            # Use a callback to restore expanded state after edit
-            def restore_expanded_state():
-                if was_expanded:
-                    for child in self.list_box.observe_children():
-                        if child.get_title() == service_name[:-8]:
-                            child.set_expanded(True)
-                            break
-                return False
-            
-            GLib.timeout_add(1000, restore_expanded_state)
-            
-        except GLib.Error as e:
-            self.show_error_dialog(f"Failed to edit service: {e.message}")
-
-    def refresh_data(self, *args):
-        """Refresh the service data"""
-        self.load_services()
-
-    def on_search_toggled(self, button):
-        self.search_bar.set_search_mode(button.get_active())
-
-    def on_search_changed(self, entry):
-        self.list_box.invalidate_filter()
-
-    def filter_services(self, row):
-        """Filter services based on search text and current filter"""
-        if not hasattr(row, 'get_title'):
-            return True
-
-        # First apply search filter
-        show_by_search = True
-        if self.search_entry.get_text():
-            search_text = self.search_entry.get_text().lower()
-            title = row.get_title().lower()
-            subtitle = row.get_subtitle().lower()
-            show_by_search = search_text in title or search_text in subtitle
-
-        # Then apply status filter
-        show_by_status = True
-        if self.current_filter != "all":
-            subtitle = row.get_subtitle().lower()
-            if self.current_filter == "running":
-                show_by_status = "running" in subtitle
-            elif self.current_filter == "inactive":
-                show_by_status = "inactive" in subtitle
-            elif self.current_filter == "failed":
-                show_by_status = "failed" in subtitle
-
-        return show_by_search and show_by_status
-
-    def show_error_dialog(self, message):
-        dialog = Adw.MessageDialog(
-            parent=self,
-            heading="Error",
-            body=message
+        # Initialize logging with more detail
+        logging.basicConfig(
+            level=logging.DEBUG,
+            format='%(asctime)s - %(levelname)s - %(message)s'
         )
-        dialog.add_response("ok", "_OK")
-        dialog.present()
-
-    def refresh_display(self):
-        """Update the display with the current service data"""
-        while True:
-            row = self.list_box.get_first_child()
-            if row is None:
-                break
-            self.list_box.remove(row)
-
-        for service_data in self.all_services:
-            row = self.create_service_row(service_data)
-            self.list_box.append(row)
-
-    def toggle_search(self, action, param):
-        self.search_button.set_active(not self.search_button.get_active())
-
-    def on_filter_changed(self, button, filter_type):
-        """Handle filter button toggles"""
-        if button.get_active():
-            # Deactivate other filter buttons
-            for btn_type, btn in self.filter_buttons.items():
-                if btn_type != filter_type:
-                    btn.set_active(False)
-            
-            self.current_filter = filter_type
-            self.refresh_data()  # Reload with new filter
-
-    def on_daemon_reload(self, button):
-        """Reload systemd daemon configuration for both system and user"""
-        try:
-            self.log_message("Reloading systemd configuration...")
-            
-            # Reload system daemon
-            system_cmd = ["systemctl", "daemon-reload"]
-            if not self.is_root:
-                system_cmd.insert(0, "pkexec")
-            
-            self.log_message("Running system daemon reload...")
-            result = subprocess.run(
-                self.run_host_command(system_cmd),
-                capture_output=True,
-                text=True,
-                check=True
-            )
-            if result.stdout:
-                self.log_message(f"System daemon output:\n{result.stdout.strip()}")
-            
-            # Reload user daemon
-            user_cmd = ["systemctl", "--user", "daemon-reload"]
-            self.log_message("Running user daemon reload...")
-            result = subprocess.run(
-                self.run_host_command(user_cmd),
-                capture_output=True,
-                text=True,
-                check=True
-            )
-            if result.stdout:
-                self.log_message(f"User daemon output:\n{result.stdout.strip()}")
-            
-            self.log_message("Systemd configuration reload completed successfully")
-            self.refresh_data()  # Refresh the service list
-            
-        except subprocess.CalledProcessError as e:
-            error_msg = f"Failed to reload daemon: {e}"
-            if e.stderr:
-                error_msg += f"\nError output:\n{e.stderr.decode()}"
-            self.show_error_dialog(error_msg)
-            self.log_message(error_msg, "ERROR")
-
-    def on_show_status(self, button, service_name):
-        """Show detailed status of the service"""
-        try:
-            service_file = f"{service_name}.service"
-            is_user_service = self.check_if_user_service(service_name)
-            # Simple status command without pkexec, just like running it in terminal
-            status_cmd = f"systemctl {'--user ' if is_user_service else ''}status {service_file}; read -p 'Press Enter to close...'"
-            
-            terminal = self.get_terminal_command()
-            if terminal is None:
-                self.show_error_dialog("No suitable terminal emulator found. Please install gnome-terminal, xfce4-terminal, or konsole.")
-                return
-            
-            # Build the complete command
-            terminal_cmd = [terminal['binary']]
-            terminal_cmd.extend(terminal['args'])
-            terminal_cmd.append(status_cmd)
-            
-            # Use run_host_command for the complete command
-            cmd = self.run_host_command(terminal_cmd)
-            
-            GLib.spawn_async(
-                argv=cmd,
-                flags=GLib.SpawnFlags.SEARCH_PATH | GLib.SpawnFlags.DO_NOT_REAP_CHILD,
-                child_setup=None,
-                user_data=None
-            )
-            
-        except GLib.Error as e:
-            self.show_error_dialog(f"Failed to show service status: {e.message}")
-
-    def check_if_user_service(self, service_name):
-        """Helper method to check if a service is a user service"""
-        try:
-            # Check if service exists in system paths first
-            system_paths = [
-                "/etc/systemd/system",
-                "/usr/lib/systemd/system",
-                "/lib/systemd/system",
-                "/usr/local/lib/systemd/system"
-            ]
-            
-            service_file = f"{service_name}.service"
-            
-            # Check system paths first
-            for path in system_paths:
-                if os.path.exists(os.path.join(path, service_file)):
-                    return False  # It's a system service
-            
-            # If not found in system paths, check user paths
-            user_service_path = os.path.expanduser(f"~/.config/systemd/user/{service_file}")
-            if os.path.exists(user_service_path):
-                return True
-            
-            # Final check with systemctl --user
-            check_cmd = ["systemctl", "--user", "list-unit-files", "--type=service", "--all", "--no-pager", "--plain"]
-            result = subprocess.run(
-                self.run_host_command(check_cmd),
-                capture_output=True,
-                text=True,
-                check=True
-            )
-            return any(service_file in line for line in result.stdout.splitlines())
-            
-        except subprocess.CalledProcessError:
-            # If in doubt, assume it's a system service
-            return False
-
-    def get_terminal_command(self):
-        """Helper function to find an available terminal emulator"""
-        terminals = [
-            {
-                'binary': 'gnome-terminal',
-                'args': ['--', 'bash', '-c']
-            },
-            {
-                'binary': 'xfce4-terminal',
-                'args': ['-e', 'bash -c']
-            },
-            {
-                'binary': 'konsole',
-                'args': ['-e', 'bash -c']
-            },
-            {
-                'binary': 'x-terminal-emulator',
-                'args': ['-e', 'bash -c']
-            }
-        ]
+        self.logger = logging.getLogger(__name__)
+        self.logger.info("Starting Systemd Service Manager")
         
-        for terminal in terminals:
-            try:
-                # Use run_host_command to check if terminal exists
-                subprocess.run(
-                    self.run_host_command(['which', terminal['binary']]),
-                    check=True,
-                    capture_output=True
-                )
-                return terminal
-            except subprocess.CalledProcessError:
-                continue
-        return None
-
-    def on_show_log(self, button, service_name):
-        """Show service logs in GNOME Logs"""
-        try:
-            service_file = f"{service_name}.service"
-            is_user_service = self.check_if_user_service(service_name)
-            
-            # Build the command to open GNOME Logs
-            if is_user_service:
-                # For user services, open user journal
-                cmd = ["gnome-logs", "--identifier", service_file]
-            else:
-                # For system services, might need elevated privileges
-                cmd = ["pkexec", "gnome-logs", "--identifier", service_file]
-            
-            # Use run_host_command for Flatpak compatibility
-            cmd = self.run_host_command(cmd)
-            
-            GLib.spawn_async(
-                argv=cmd,
-                flags=GLib.SpawnFlags.SEARCH_PATH | GLib.SpawnFlags.DO_NOT_REAP_CHILD,
-                child_setup=None,
-                user_data=None
-            )
-            
-        except GLib.Error as e:
-            self.show_error_dialog(f"Failed to show logs: {e.message}\nPlease make sure GNOME Logs (gnome-logs) is installed.")
-
-    def on_follow_log(self, button, service_name):
-        """Show real-time service logs using journalctl -fu"""
-        try:
-            service_file = f"{service_name}.service"
-            is_user_service = self.check_if_user_service(service_name)
-            
-            # Build the journalctl command
-            follow_cmd = f"journalctl {'--user ' if is_user_service else ''}-fu {service_file}"
-            
-            terminal = self.get_terminal_command()
-            if terminal is None:
-                self.show_error_dialog("No suitable terminal emulator found. Please install gnome-terminal, xfce4-terminal, or konsole.")
-                return
-            
-            # Build the complete command
-            terminal_cmd = [terminal['binary']]
-            terminal_cmd.extend(terminal['args'])
-            terminal_cmd.append(follow_cmd)
-            
-            # Use run_host_command for Flatpak compatibility
-            cmd = self.run_host_command(terminal_cmd)
-            
-            GLib.spawn_async(
-                argv=cmd,
-                flags=GLib.SpawnFlags.SEARCH_PATH | GLib.SpawnFlags.DO_NOT_REAP_CHILD,
-                child_setup=None,
-                user_data=None
-            )
-            
-        except GLib.Error as e:
-            self.show_error_dialog(f"Failed to show service logs: {e.message}")
-
-    def on_show_loaded_changed(self, action, value):
-        """Handle show loaded units toggle"""
-        action.set_state(value)
-        self.show_only_loaded = value.get_boolean()
+        # Store remote connections
+        self.remote_hosts: Dict[str, RemoteHost] = {}
+        self.active_connections: Dict[str, paramiko.SSHClient] = {}
         
-        # Start spinner
-        self.spinner.start()
-        self.spinner.set_visible(True)
+        # Add near the start of __init__ with other initializations
+        self.show_inactive = False  # Track whether to show inactive services
         
-        # Use timeout to allow spinner to be shown
-        GLib.timeout_add(50, self._delayed_refresh)
+        self.setup_ui()
+        self.load_saved_hosts()
 
-    def _delayed_refresh(self):
-        """Refresh data and stop spinner"""
-        self.refresh_data()
-        self.spinner.stop()
-        self.spinner.set_visible(False)
-        return False
-
-    def on_row_expanded(self, row, param):
-        """Handle row expansion to ensure description is visible"""
-        if row.get_expanded():
-            # Get the scrolled window that contains the list box
-            scrolled_window = None
-            for widget in self.main_box:
-                if isinstance(widget, Gtk.ScrolledWindow):
-                    scrolled_window = widget
-                    break
-            
-            if scrolled_window:
-                # Get the horizontal adjustment
-                hadj = scrolled_window.get_hadjustment()
-                # Scroll to the beginning to show the description
-                hadj.set_value(0)
-
-    def refresh_and_restore(self, service_name=None):
-        """Refresh the service list and restore expanded state"""
-        # Store current vertical scroll position
-        scrolled = self.list_box.get_parent()
-        v_pos = 0
-        if isinstance(scrolled, Gtk.ScrolledWindow):
-            v_pos = scrolled.get_vadjustment().get_value()
+    def setup_ui(self):
+        # Apply initial CSS theme
+        self.update_custom_theme()
         
-        self.load_services()
-        
-        # Restore vertical position and force scroll to left
-        if isinstance(scrolled, Gtk.ScrolledWindow):
-            def restore_scroll():
-                # Force scroll to left (0 is leftmost position)
-                scrolled.get_hadjustment().set_value(0)
-                # Restore vertical position
-                scrolled.get_vadjustment().set_value(v_pos)
-                return False
-            # Add a slightly longer delay to ensure content is loaded
-            GLib.timeout_add(200, restore_scroll)
-        
-        if service_name:
-            # Wait for the list to be populated
-            GLib.timeout_add(200, self._restore_state, service_name)
+        # Main container
+        main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self.add(main_box)
 
-    def _restore_state(self, service_name):
-        """Helper to restore expanded state and scroll position"""
-        for row in self.list_box.get_children():
-            if isinstance(row, Adw.ExpanderRow) and row.get_title() == service_name:
-                row.set_expanded(True)
-                # Get the row's parent ScrolledWindow
-                scrolled = self.list_box.get_parent()
-                if isinstance(scrolled, Gtk.ScrolledWindow):
-                    # Scroll to the row vertically
-                    adjustment = scrolled.get_vadjustment()
-                    row_allocation = row.get_allocation()
-                    adjustment.set_value(row_allocation.y)
-                    # Ensure horizontal scroll is at left
-                    scrolled.get_hadjustment().set_value(0)
-                break
-        return False
-
-    def clear_log(self, button):
-        """Clear the log buffer"""
-        self.log_buffer.set_text("")
-
-    def log_message(self, message, level="INFO"):
-        """Add a message to the log viewer"""
-        # Create log viewer if it doesn't exist
-        if self.log_buffer is None:
-            self.create_log_viewer()
-
-        end_iter = self.log_buffer.get_end_iter()
-        
-        # Add timestamp
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
-        # Create tags for different message types if they don't exist
-        if not self.log_buffer.get_tag_table().lookup("error"):
-            self.log_buffer.create_tag("error", foreground="#ff0000")  # Red for errors
-        
-        # Insert timestamp
-        self.log_buffer.insert(end_iter, f"\n[{timestamp}] ")
-        
-        # Insert level and message with appropriate color
-        if level == "ERROR":
-            self.log_buffer.insert_with_tags_by_name(end_iter, f"{level}: ", "error")
-            self.log_buffer.insert_with_tags_by_name(end_iter, message, "error")
-        else:
-            self.log_buffer.insert(end_iter, f"{level}: {message}")
-        
-        # Add empty lines for better readability
-        self.log_buffer.insert(end_iter, "\n\n")
-        
-        # Get the adjustment for the scrolled window
-        scrolled = self.log_view.get_parent()
-        if isinstance(scrolled, Gtk.ScrolledWindow):
-            adj = scrolled.get_vadjustment()
-            # Scroll to bottom by setting value to upper - page_size
-            def scroll_to_end():
-                adj.set_value(adj.get_upper() - adj.get_page_size())
-                return False
-            # Use idle_add to ensure scrolling happens after text is rendered
-            GLib.idle_add(scroll_to_end)
-
-    def on_window_realize(self, widget):
-        """Set initial paned position after window is realized"""
-        # Set position to show just the handle (10 pixels from bottom)
-        self.paned.set_position(self.get_height() - 10)
-
-    def on_show_log_changed(self, action, value):
-        """Handle show log toggle"""
-        action.set_state(value)
-        show_log = value.get_boolean()
-        
-        if show_log:
-            # Create and show log viewer
-            log_box = self.create_log_viewer()
-            
-            # Set fixed height
-            log_box.set_size_request(-1, 120)
-            
-            # Add to paned
-            self.paned.set_end_child(log_box)
-            
-            # Disable resizing for the log viewer
-            self.paned.set_resize_end_child(False)
-            self.paned.set_shrink_end_child(False)
-            
-            # Set position to show exactly 120px
-            GLib.idle_add(lambda: self.paned.set_position(self.paned.get_allocated_height() - 120))
-        else:
-            # Remove log viewer
-            self.paned.set_end_child(None)
-            
-            # Reset paned properties
-            self.paned.set_resize_end_child(True)
-            self.paned.set_shrink_end_child(True)
-
-    def create_log_viewer(self):
-        """Create log viewer on demand"""
-        if self.log_box is None:
-            # Create log view
-            log_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-
-            # Add log header
-            log_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-            log_header.add_css_class("toolbar")
-
-            log_label = Gtk.Label(label="Output Log")
-            log_label.add_css_class("heading")
-            log_header.append(log_label)
-
-            log_box.append(log_header)
-
-            # Create log text view
-            self.log_buffer = GtkSource.Buffer()
-            self.log_view = GtkSource.View(buffer=self.log_buffer)
-            self.log_view.set_editable(False)
-            self.log_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
-            self.log_view.add_css_class("log-text")
-
-            # Add log view to scrolled window
-            log_scroll = Gtk.ScrolledWindow()
-            log_scroll.set_vexpand(True)
-            log_scroll.set_child(self.log_view)
-            log_box.append(log_scroll)
-
-            self.log_box = log_box
-
-        return self.log_box
-
-class ServiceEditor(Gtk.Window):
-    def __init__(self, parent):
-        super().__init__(title="Create New Service")
-        self.set_default_size(800, 600)
-        self.set_transient_for(parent)
-        self.parent_window = parent  # Store reference to parent window
-        
-        # Create main box
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        self.set_child(box)
-        
-        # Create header bar
+        # Header bar
         header = Gtk.HeaderBar()
+        header.set_show_close_button(True)
+        
+        # Set title on the far left
+        header.set_title(APP_NAME)
+        header.set_subtitle(None)  # Remove subtitle
+        header.set_custom_title(None)  # Remove custom title
+        
+        # Mode switcher on the left
+        mode_switch = Gtk.StackSwitcher()
+        self.stack = Gtk.Stack()
+        mode_switch.set_stack(self.stack)
+        header.pack_start(mode_switch)  # Pack to the left
+        
+        # Add menu button on the right
+        menu_button = Gtk.MenuButton()
+        menu_button.set_image(Gtk.Image.new_from_icon_name("open-menu-symbolic", Gtk.IconSize.BUTTON))
+        header.pack_end(menu_button)  # Pack to the right
+        
+        # Set window titlebar
         self.set_titlebar(header)
+
+        # Create popover menu
+        popover = Gtk.Popover()
+        menu_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        menu_box.set_margin_start(12)
+        menu_box.set_margin_end(12)
+        menu_box.set_margin_top(6)
+        menu_box.set_margin_bottom(6)
         
-        # Add search button
-        search_button = Gtk.ToggleButton(icon_name="system-search-symbolic")
-        search_button.set_tooltip_text("Search (Ctrl+F)")
-        search_button.connect("toggled", self.on_search_toggled)
-        header.pack_end(search_button)
+        # Create menu items
+        create_service_btn = Gtk.Button(label="Create Service")
+        reload_config_btn = Gtk.Button(label="Reload Configuration")
+        show_inactive_btn = Gtk.Button(label="Show Inactive Services")  # New button
+        theme_btn = Gtk.Button(label="Toggle Dark Theme")
+        about_btn = Gtk.Button(label="About")
         
-        # Add save button
-        save_button = Gtk.Button(label="Save")
-        save_button.connect("clicked", self.on_save_clicked)
-        header.pack_end(save_button)
+        # Add icons to menu items
+        create_service_btn.set_image(Gtk.Image.new_from_icon_name("document-new-symbolic", Gtk.IconSize.BUTTON))
+        create_service_btn.set_always_show_image(True)
+        reload_config_btn.set_image(Gtk.Image.new_from_icon_name("view-refresh-symbolic", Gtk.IconSize.BUTTON))
+        reload_config_btn.set_always_show_image(True)
+        show_inactive_btn.set_image(Gtk.Image.new_from_icon_name("view-list-symbolic", Gtk.IconSize.BUTTON))
+        show_inactive_btn.set_always_show_image(True)
+        theme_btn.set_image(Gtk.Image.new_from_icon_name("display-brightness-symbolic", Gtk.IconSize.BUTTON))
+        theme_btn.set_always_show_image(True)
+        about_btn.set_image(Gtk.Image.new_from_icon_name("help-about-symbolic", Gtk.IconSize.BUTTON))
+        about_btn.set_always_show_image(True)
         
-        # Add search bar
-        self.search_bar = Gtk.SearchBar()
-        self.search_entry = Gtk.SearchEntry()
-        self.search_entry.set_hexpand(True)
-        self.search_entry.connect("search-changed", self.on_search_changed)
-        self.search_bar.set_child(self.search_entry)
-        box.append(self.search_bar)
+        # Connect signals
+        create_service_btn.connect("clicked", self.show_create_service_dialog)
+        reload_config_btn.connect("clicked", self.reload_systemd_config)
+        show_inactive_btn.connect("clicked", self.toggle_show_inactive)
+        theme_btn.connect("clicked", self.toggle_theme)
+        about_btn.connect("clicked", self.show_about_dialog)
         
-        # Create source view
-        self.source_view = GtkSource.View()
-        self.source_view.set_show_line_numbers(True)
-        self.source_view.set_auto_indent(True)
-        self.source_view.set_indent_width(2)
-        self.source_view.set_insert_spaces_instead_of_tabs(True)
-        self.source_view.set_highlight_current_line(True)
+        # Add buttons to menu
+        menu_box.pack_start(create_service_btn, False, False, 0)
+        menu_box.pack_start(reload_config_btn, False, False, 0)
+        menu_box.pack_start(show_inactive_btn, False, False, 0)
+        menu_box.pack_start(theme_btn, False, False, 0)
+        menu_box.pack_start(Gtk.Separator(), False, False, 3)
+        menu_box.pack_start(about_btn, False, False, 0)
         
-        # Set up search settings
-        self.search_settings = GtkSource.SearchSettings()
-        self.search_settings.set_case_sensitive(False)
-        self.search_settings.set_wrap_around(True)
+        # Show all widgets in the menu box
+        menu_box.show_all()
         
-        self.search_context = GtkSource.SearchContext(
-            buffer=self.source_view.get_buffer(),
-            settings=self.search_settings
-        )
+        popover.add(menu_box)
+        menu_button.set_popover(popover)
+
+        # Local and Remote pages
+        self.stack.add_titled(self.create_local_page(), "local", "Local")
+        self.stack.add_titled(self.create_remote_page(), "remote", "Remote")
         
-        # Set up buffer with service template
-        buffer = self.source_view.get_buffer()
-        buffer.set_text(self.get_service_template())
+        main_box.pack_start(self.stack, True, True, 0)
+
+    def create_remote_page(self):
+        remote_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         
-        # Set up syntax highlighting
-        lang_manager = GtkSource.LanguageManager.get_default()
-        ini_lang = lang_manager.get_language("ini")
-        buffer.set_language(ini_lang)
+        # Left sidebar for host management
+        sidebar = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        sidebar.set_size_request(250, -1)
+        
+        # Host management buttons with better spacing and icons
+        host_buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        host_buttons.set_margin_start(6)
+        host_buttons.set_margin_end(6)
+        host_buttons.set_margin_top(6)
+        host_buttons.set_margin_bottom(12)  # Add more bottom margin
+        
+        # Create buttons with icons
+        add_host_btn = Gtk.Button(label="Add Host")
+        add_host_btn.set_image(Gtk.Image.new_from_icon_name("list-add-symbolic", Gtk.IconSize.BUTTON))
+        add_host_btn.set_always_show_image(True)
+        
+        edit_host_btn = Gtk.Button(label="Edit Host")
+        edit_host_btn.set_image(Gtk.Image.new_from_icon_name("document-edit-symbolic", Gtk.IconSize.BUTTON))
+        edit_host_btn.set_always_show_image(True)
+        
+        connect_btn = Gtk.Button(label="Connect")
+        connect_btn.set_image(Gtk.Image.new_from_icon_name("network-transmit-symbolic", Gtk.IconSize.BUTTON))
+        connect_btn.set_always_show_image(True)
+        
+        disconnect_btn = Gtk.Button(label="Disconnect")
+        disconnect_btn.set_image(Gtk.Image.new_from_icon_name("network-offline-symbolic", Gtk.IconSize.BUTTON))
+        disconnect_btn.set_always_show_image(True)
+        
+        # Connect signals
+        add_host_btn.connect("clicked", self.show_add_host_dialog)
+        edit_host_btn.connect("clicked", self.show_edit_host_dialog)
+        connect_btn.connect("clicked", self.on_connect_clicked)
+        disconnect_btn.connect("clicked", self.on_disconnect_clicked)
+        
+        # Add buttons to box with equal spacing
+        host_buttons.pack_start(add_host_btn, True, True, 0)
+        host_buttons.pack_start(edit_host_btn, True, True, 0)
+        host_buttons.pack_start(connect_btn, True, True, 0)
+        host_buttons.pack_start(disconnect_btn, True, True, 0)
+        
+        # Host list
+        scrolled = Gtk.ScrolledWindow()
+        self.hosts_list = Gtk.ListBox()
+        self.hosts_list.connect("button-press-event", self.on_host_button_press)
+        scrolled.add(self.hosts_list)
+        
+        sidebar.pack_start(scrolled, True, True, 0)
+        sidebar.pack_start(host_buttons, False, False, 0)
+        
+        # Main content area
+        content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        
+        # Service list with descriptions
+        self.remote_service_store = Gtk.ListStore(str, str, str, str)  # Name, Status, Host, Description
+        self.remote_service_view = Gtk.TreeView(model=self.remote_service_store)
+        
+        # Create cell renderers with better formatting
+        cell = Gtk.CellRendererText()
+        cell.set_property("ypad", 6)
+        cell.set_property("wrap-mode", Pango.WrapMode.WORD)
+        cell.set_property("wrap-width", 300)
+        
+        # Create columns with better default widths and sorting
+        name_col = Gtk.TreeViewColumn("Service")
+        name_col.pack_start(cell, True)
+        name_col.set_cell_data_func(cell, self.format_service_cell)
+        name_col.set_resizable(True)
+        name_col.set_expand(True)
+        name_col.set_min_width(300)
+        name_col.set_sort_column_id(0)  # Sort by service name
+        
+        status_col = Gtk.TreeViewColumn("Status", Gtk.CellRendererText(), text=1)
+        status_col.set_resizable(True)
+        status_col.set_fixed_width(120)
+        status_col.set_sizing(Gtk.TreeViewColumnSizing.FIXED)
+        status_col.set_sort_column_id(1)  # Sort by status
+        
+        host_col = Gtk.TreeViewColumn("Host", Gtk.CellRendererText(), text=2)
+        host_col.set_resizable(True)
+        host_col.set_fixed_width(150)
+        host_col.set_sizing(Gtk.TreeViewColumnSizing.FIXED)
+        host_col.set_sort_column_id(2)  # Sort by host
+        
+        self.remote_service_view.append_column(name_col)
+        self.remote_service_view.append_column(status_col)
+        self.remote_service_view.append_column(host_col)
+        
+        # Connect double-click and context menu
+        self.remote_service_view.connect("row-activated", self.on_service_activated)
+        self.remote_service_view.connect("button-press-event", self.on_service_button_press)
+        
+        service_scroll = Gtk.ScrolledWindow()
+        service_scroll.add(self.remote_service_view)
+        
+        # Control buttons with styling
+        control_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        control_box.set_margin_start(12)
+        control_box.set_margin_end(12)
+        control_box.set_margin_top(6)
+        control_box.set_margin_bottom(6)
+        
+        # Add a subtle background
+        control_box_style = control_box.get_style_context()
+        control_box_style.add_class('action-bar')
+        
+        # Create styled buttons
+        start_btn = self.create_action_button("Start", "media-playback-start-symbolic")
+        stop_btn = self.create_action_button("Stop", "media-playback-stop-symbolic")
+        restart_btn = self.create_action_button("Restart", "view-refresh-symbolic")
+        enable_btn = self.create_action_button("Enable", "object-select-symbolic")
+        disable_btn = self.create_action_button("Disable", "window-close-symbolic")
+        logs_btn = self.create_action_button("View Logs", "text-x-generic-symbolic")
+        
+        # Connect signals
+        start_btn.connect("clicked", self.on_start_service)
+        stop_btn.connect("clicked", self.on_stop_service)
+        restart_btn.connect("clicked", self.on_restart_service)
+        enable_btn.connect("clicked", self.on_enable_service)
+        disable_btn.connect("clicked", self.on_disable_service)
+        logs_btn.connect("clicked", self.show_logs_dialog)
+        
+        # Add buttons with consistent spacing
+        for btn in (start_btn, stop_btn, restart_btn, enable_btn, disable_btn, logs_btn):
+            control_box.pack_start(btn, False, False, 0)
+        
+        content_box.pack_start(service_scroll, True, True, 0)
+        content_box.pack_start(control_box, False, False, 0)
+        
+        remote_box.pack_start(sidebar, False, False, 0)
+        remote_box.pack_start(content_box, True, True, 0)
+        
+        # Make the store sortable
+        self.remote_service_store.set_sort_func(0, self.sort_by_name)
+        self.remote_service_store.set_sort_func(1, self.sort_by_status)
+        self.remote_service_store.set_sort_func(2, self.sort_by_host)
+        
+        return remote_box
+
+    def create_local_page(self):
+        local_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        
+        # Create service list store and view with descriptions
+        self.local_service_store = Gtk.ListStore(str, str, str)  # Name, Status, Description
+        self.local_service_view = Gtk.TreeView(model=self.local_service_store)
+        
+        # Create cell renderers with better formatting
+        cell = Gtk.CellRendererText()
+        cell.set_property("ypad", 6)
+        cell.set_property("wrap-mode", Pango.WrapMode.WORD)
+        cell.set_property("wrap-width", 300)
+        
+        # Create columns with better default widths and sorting
+        name_col = Gtk.TreeViewColumn("Service")
+        name_col.pack_start(cell, True)
+        name_col.set_cell_data_func(cell, self.format_local_service_cell)
+        name_col.set_resizable(True)
+        name_col.set_expand(True)
+        name_col.set_min_width(300)
+        name_col.set_sort_column_id(0)  # Sort by service name
+        
+        status_col = Gtk.TreeViewColumn("Status", Gtk.CellRendererText(), text=1)
+        status_col.set_resizable(True)
+        status_col.set_fixed_width(120)
+        status_col.set_sizing(Gtk.TreeViewColumnSizing.FIXED)
+        status_col.set_sort_column_id(1)  # Sort by status
+        
+        self.local_service_view.append_column(name_col)
+        self.local_service_view.append_column(status_col)
+        
+        # Connect double-click and context menu
+        self.local_service_view.connect("row-activated", self.on_local_service_activated)
+        self.local_service_view.connect("button-press-event", self.on_local_service_button_press)
         
         # Add scrolled window
         scrolled = Gtk.ScrolledWindow()
-        scrolled.set_vexpand(True)
-        scrolled.set_child(self.source_view)
-        box.append(scrolled)
+        scrolled.add(self.local_service_view)
         
-        # Set up keyboard shortcuts
-        self.search_bar.set_key_capture_widget(self)
+        # Control buttons with styling
+        control_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        control_box.set_margin_start(12)
+        control_box.set_margin_end(12)
+        control_box.set_margin_top(6)
+        control_box.set_margin_bottom(6)
         
-    def on_search_toggled(self, button):
-        """Toggle search bar visibility"""
-        self.search_bar.set_search_mode(button.get_active())
-        if button.get_active():
-            self.search_entry.grab_focus()
-    
-    def on_search_changed(self, entry):
-        """Handle search text changes"""
-        search_text = entry.get_text()
-        self.search_settings.set_search_text(search_text)
+        # Add a subtle background
+        control_box_style = control_box.get_style_context()
+        control_box_style.add_class('action-bar')
         
-        # Highlight first match
-        if search_text:
-            buffer = self.source_view.get_buffer()
-            if not self.search_context.forward(
-                buffer.get_start_iter(),
-                buffer.get_end_iter(),
-                None
-            )[0]:
-                # No match found
-                entry.add_css_class("error")
+        # Create styled buttons
+        start_btn = self.create_action_button("Start", "media-playback-start-symbolic")
+        stop_btn = self.create_action_button("Stop", "media-playback-stop-symbolic")
+        restart_btn = self.create_action_button("Restart", "view-refresh-symbolic")
+        enable_btn = self.create_action_button("Enable", "object-select-symbolic")
+        disable_btn = self.create_action_button("Disable", "window-close-symbolic")
+        refresh_btn = self.create_action_button("Refresh", "view-refresh-symbolic")
+        logs_btn = self.create_action_button("View Logs", "text-x-generic-symbolic")
+        
+        # Connect signals
+        start_btn.connect("clicked", self.on_local_start_service)
+        stop_btn.connect("clicked", self.on_local_stop_service)
+        restart_btn.connect("clicked", self.on_local_restart_service)
+        enable_btn.connect("clicked", self.on_local_enable_service)
+        disable_btn.connect("clicked", self.on_local_disable_service)
+        refresh_btn.connect("clicked", self.refresh_local_services)
+        logs_btn.connect("clicked", self.show_local_logs_dialog)
+        
+        # Add buttons with consistent spacing
+        for btn in (start_btn, stop_btn, restart_btn, enable_btn, disable_btn, refresh_btn, logs_btn):
+            control_box.pack_start(btn, False, False, 0)
+        
+        local_box.pack_start(scrolled, True, True, 0)
+        local_box.pack_start(control_box, False, False, 0)
+        
+        # Initial service load
+        self.refresh_local_services()
+        
+        # Make the store sortable
+        self.local_service_store.set_sort_func(0, self.sort_by_name)
+        self.local_service_store.set_sort_func(1, self.sort_by_status)
+        
+        return local_box
+
+    def create_action_button(self, label, icon_name=None):
+        """Create a styled action button"""
+        btn = Gtk.Button(label=label)
+        btn.set_always_show_image(True)
+        
+        if icon_name:
+            image = Gtk.Image.new_from_icon_name(icon_name, Gtk.IconSize.BUTTON)
+            btn.set_image(image)
+            btn.set_image_position(Gtk.PositionType.TOP)
+        
+        # Add button styling
+        btn_style = btn.get_style_context()
+        btn_style.add_class('action-button')
+        
+        return btn
+
+    def refresh_local_services(self, widget=None):
+        """Refresh the list of local systemd services"""
+        try:
+            # Run systemctl command with JSON output
+            cmd = ["systemctl", "list-units", "--type=service", "--output=json", "--no-pager"]
+            if self.show_inactive:
+                cmd.append("--all")  # Show all units including inactive
+                
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            
+            self.local_service_store.clear()
+            
+            # Parse JSON output
+            import json
+            services = json.loads(result.stdout)
+            
+            # Add services to the store
+            for service in services:
+                service_name = service.get("unit", "")
+                active_state = service.get("active", "")
+                sub_state = service.get("sub", "")  # Get the sub-state (running, dead, etc.)
+                description = service.get("description", "")
+                
+                # Combine active state and sub-state
+                status = f"{active_state} ({sub_state})"
+                
+                if service_name.endswith(".service"):
+                    self.local_service_store.append([service_name, status, description])
+                    
+        except json.JSONDecodeError as e:
+            self.show_error_dialog(f"Failed to parse service list: {str(e)}")
+        except Exception as e:
+            self.show_error_dialog(f"Failed to refresh local services: {str(e)}")
+
+    def show_add_host_dialog(self, button):
+        dialog = Gtk.Dialog(
+            title="Add Remote Host",
+            parent=self,
+            flags=0
+        )
+        
+        dialog.add_buttons(
+                Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
+                Gtk.STOCK_OK, Gtk.ResponseType.OK
+        )
+        
+        content = dialog.get_content_area()
+        grid = Gtk.Grid()
+        grid.set_column_spacing(12)
+        grid.set_row_spacing(6)
+        
+        # Input fields
+        name_entry = Gtk.Entry()
+        host_entry = Gtk.Entry()
+        username_entry = Gtk.Entry()
+        password_entry = Gtk.Entry()
+        password_entry.set_visibility(False)  # Hide password characters
+        
+        auth_combo = Gtk.ComboBoxText()
+        auth_combo.append_text("Password")
+        auth_combo.append_text("SSH Key")
+        auth_combo.set_active(0)
+        
+        key_chooser = Gtk.FileChooserButton(title="Select SSH Key")
+        key_chooser.set_sensitive(False)
+        
+        # Make password/key fields sensitive based on auth type
+        def on_auth_changed(combo):
+            is_password = combo.get_active_text() == "Password"
+            password_entry.set_sensitive(is_password)
+            key_chooser.set_sensitive(not is_password)
+        
+        auth_combo.connect("changed", on_auth_changed)
+        
+        # Layout
+        labels = ["Name:", "Hostname:", "Username:", "Password:", "Auth Type:", "SSH Key:"]
+        widgets = [name_entry, host_entry, username_entry, password_entry, auth_combo, key_chooser]
+        
+        for i, (label, widget) in enumerate(zip(labels, widgets)):
+            grid.attach(Gtk.Label(label=label), 0, i, 1, 1)
+            grid.attach(widget, 1, i, 1, 1)
+        
+        content.add(grid)
+        dialog.show_all()
+        
+        response = dialog.run()
+        if response == Gtk.ResponseType.OK:
+            host = RemoteHost(
+                name=name_entry.get_text(),
+                hostname=host_entry.get_text(),
+                username=username_entry.get_text(),
+                auth_type="key" if auth_combo.get_active_text() == "SSH Key" else "password",
+                key_path=key_chooser.get_filename() if auth_combo.get_active_text() == "SSH Key" else None
+            )
+            # Store password in keyring if using password auth
+            if host.auth_type == "password":
+                keyring.set_password(
+                    "systemd-manager",
+                    f"{host.username}@{host.hostname}",
+                    password_entry.get_text()
+            )
+            self.add_remote_host(host)
+        
+        dialog.destroy()
+
+    def add_remote_host(self, host: RemoteHost):
+        """Add a new remote host without connecting"""
+        self.remote_hosts[host.name] = host
+        self.save_hosts()
+        self.refresh_hosts_list()
+        # No automatic connection or refresh here
+
+    def on_connect_clicked(self, button):
+        """Handle connect button click"""
+        selection = self.hosts_list.get_selected_row()
+        if not selection:
+            return
+        
+        host_name = selection.get_children()[0].get_children()[1].get_text()
+        host = self.remote_hosts.get(host_name)
+        if not host:
+            return
+        
+        # Show connecting dialog with spinner
+        dialog = Gtk.MessageDialog(
+            transient_for=self,
+            flags=0,
+            message_type=Gtk.MessageType.INFO,
+            buttons=Gtk.ButtonsType.CANCEL,
+            text=f"Connecting to {host.name}..."
+        )
+        
+        spinner = Gtk.Spinner()
+        spinner.start()
+        dialog.get_content_area().pack_end(spinner, False, False, 10)
+        dialog.show_all()
+        
+        def do_connect():
+            try:
+                client = paramiko.SSHClient()
+                client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                
+                # Connect with timeout
+                client.connect(
+                    hostname=host.hostname,
+                    username=host.username,
+                    password=keyring.get_password("systemd-manager", f"{host.username}@{host.hostname}") if host.auth_type == "password" else None,
+                    key_filename=host.key_path if host.auth_type == "key" else None,
+                    timeout=5  # 5 second timeout
+                )
+                
+                # Test connection with a simple command
+                stdin, stdout, stderr = client.exec_command("echo test", timeout=5)
+                if stdout.read().decode().strip() != "test":
+                    GLib.idle_add(lambda: self.on_connect_error("Failed to execute test command", dialog))
+                    return None
+                
+                GLib.idle_add(lambda: self.on_connect_success(host.name, client, dialog))
+                
+                return client
+            except Exception as e:
+                self.logger.error(f"Connection failed: {str(e)}")
+                return None
+        
+        # Run connection in a thread
+        thread = threading.Thread(target=do_connect)
+        thread.daemon = True
+        thread.start()
+        
+        # Handle dialog response (Cancel button)
+        response = dialog.run()
+        if response == Gtk.ResponseType.CANCEL:
+            dialog.destroy()
+
+    def on_connect_success(self, host_name, client, dialog):
+        """Handle successful connection"""
+        self.active_connections[host_name] = client
+        self.logger.info(f"Successfully connected to {host_name}")
+        dialog.destroy()
+        
+        # Update UI
+        self.refresh_hosts_list()
+        # Find and select the row for this host
+        for row in self.hosts_list.get_children():
+            host_label = row.get_children()[0].get_children()[1]
+            if host_label.get_text() == host_name:
+                self.hosts_list.select_row(row)
+                # Refresh services for the newly connected host
+                self.refresh_services(host_name)
+                break
+        return False
+
+    def on_connect_error(self, error_msg, dialog):
+        """Handle connection error"""
+        dialog.destroy()
+        self.show_error_dialog(f"Connection failed: {error_msg}")
+        return False
+
+    def _create_ssh_client(self, host: RemoteHost) -> paramiko.SSHClient:
+        """Create and configure SSH client"""
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        
+        try:
+            if host.auth_type == "password":
+                password = keyring.get_password("systemd-manager", f"{host.username}@{host.hostname}")
+                client.connect(
+                    hostname=host.hostname,
+                    username=host.username,
+                    password=password,
+                    timeout=10
+                )
+                
+                # Configure sudo to not require tty
+                client.exec_command("echo 'Defaults:$USER !requiretty' | sudo -S tee /etc/sudoers.d/systemd-manager")
+                
             else:
-                entry.remove_css_class("error")
+                client.connect(
+                    hostname=host.hostname,
+                    username=host.username,
+                    key_filename=host.key_path,
+                    timeout=10
+                )
+                
+                # Configure sudo to not require tty
+                client.exec_command("echo 'Defaults:$USER !requiretty' | sudo -S tee /etc/sudoers.d/systemd-manager")
+            
+        except Exception as e:
+            client.close()
+            raise e
+        
+        return client
+
+    def save_hosts(self):
+        config_dir = Path.home() / ".config" / "systemd-manager"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        
+        hosts_data = {
+            name: {
+                "name": host.name,
+                "hostname": host.hostname,
+                "username": host.username,
+                "auth_type": host.auth_type,
+                "key_path": host.key_path
+            }
+            for name, host in self.remote_hosts.items()
+        }
+        
+        with open(config_dir / "hosts.json", "w") as f:
+            json.dump(hosts_data, f)
+
+    def load_saved_hosts(self):
+        config_file = Path.home() / ".config" / "systemd-manager" / "hosts.json"
+        if not config_file.exists():
+            return
+            
+        with open(config_file) as f:
+            hosts_data = json.load(f)
+            
+        for host_data in hosts_data.values():
+            host = RemoteHost(**host_data)
+            self.remote_hosts[host.name] = host
+            
+        self.refresh_hosts_list()
+
+    def refresh_hosts_list(self):
+        """Refresh the list of hosts and their connection status"""
+        for child in self.hosts_list.get_children():
+            self.hosts_list.remove(child)
+            
+        for host in self.remote_hosts.values():
+            row = Gtk.ListBoxRow()
+            box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            
+            label = Gtk.Label(label=host.name)
+            status = Gtk.Image()
+            
+            # Update status icon based on connection state
+            if host.name in self.active_connections:
+                status.set_from_icon_name("gtk-yes", Gtk.IconSize.SMALL_TOOLBAR)
+            else:
+                status.set_from_icon_name("gtk-no", Gtk.IconSize.SMALL_TOOLBAR)
+            
+            box.pack_start(status, False, False, 0)
+            box.pack_start(label, True, True, 0)
+            row.add(box)
+            self.hosts_list.add(row)
+            
+        self.hosts_list.show_all()
+
+    def refresh_services(self, host_name):
+        """Refresh services for a remote host"""
+        client = self.active_connections.get(host_name)
+        if not client:
+            return False
+        
+        try:
+            # Get services with JSON output
+            cmd = "systemctl list-units --type=service --output=json --no-pager"
+            if self.show_inactive:
+                cmd += " --all"  # Show all units including inactive
+            
+            stdin, stdout, stderr = client.exec_command(cmd)
+            output = stdout.read().decode()
+            error = stderr.read().decode()
+            
+            if error:
+                self.logger.error(f"Failed to get services: {error}")
+                return False
+            
+            # Parse JSON output
+            import json
+            services = json.loads(output)
+            
+            # Update service store
+            self.remote_service_store.clear()
+            for service in services:
+                service_name = service.get("unit", "")
+                active_state = service.get("active", "")
+                sub_state = service.get("sub", "")  # Get the sub-state
+                description = service.get("description", "")
+                
+                # Combine active state and sub-state
+                status = f"{active_state} ({sub_state})"
+                
+                if service_name.endswith(".service"):
+                    self.remote_service_store.append([
+                        service_name,
+                        status,
+                        host_name,
+                        description
+                    ])
+                    
+            return False  # For GLib.timeout_add
+            
+        except json.JSONDecodeError as e:
+            self.logger.error(f"Failed to parse service list: {str(e)}")
+            return False
+        except Exception as e:
+            self.logger.error(f"Failed to refresh services: {str(e)}")
+            return False
+
+    def show_error_dialog(self, message: str):
+        """Show an error dialog with selectable text"""
+        dialog = Gtk.MessageDialog(
+            transient_for=self,
+            flags=0,
+            message_type=Gtk.MessageType.ERROR,
+            buttons=Gtk.ButtonsType.OK
+        )
+        dialog.set_default_size(400, -1)  # Set minimum width
+        
+        # Create scrolled text view
+        scrolled = Gtk.ScrolledWindow()
+        text_view = GtkSource.View()
+        text_view.set_editable(False)
+        text_view.set_cursor_visible(True)
+        text_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        text_view.set_left_margin(10)
+        text_view.set_right_margin(10)
+        
+        # Create buffer
+        text_buffer = GtkSource.Buffer()
+        text_view.set_buffer(text_buffer)
+        text_buffer.set_text(message)
+        
+        scrolled.add(text_view)
+        scrolled.set_min_content_height(60)
+        scrolled.set_min_content_width(350)  # Set minimum content width
+        
+        content_area = dialog.get_content_area()
+        content_area.set_margin_start(12)
+        content_area.set_margin_end(12)
+        content_area.set_margin_top(12)
+        content_area.set_margin_bottom(12)
+        content_area.add(scrolled)
+        
+        dialog.show_all()
+        dialog.run()
+        dialog.destroy()
+
+    def on_host_button_press(self, list_box, event):
+        """Handle mouse clicks on hosts"""
+        # Get the row that was clicked
+        row = list_box.get_row_at_y(int(event.y))
+        if not row:
+            return False
+            
+        # Single click (button 1)
+        if event.type == Gdk.EventType.BUTTON_PRESS and event.button == 1:
+            host_name = row.get_children()[0].get_children()[1].get_text()
+            list_box.select_row(row)
+            
+            # If host is connected, refresh services. Otherwise just clear the list
+            if host_name in self.active_connections:
+                self.refresh_services(host_name)
+            else:
+                self.remote_service_store.clear()
+            return True
+        # Double click (button 1)
+        elif event.type == Gdk.EventType.DOUBLE_BUTTON_PRESS and event.button == 1:
+            host_name = row.get_children()[0].get_children()[1].get_text()
+            host = self.remote_hosts.get(host_name)
+            
+            if not host:
+                return True
+            
+            if host_name not in self.active_connections:
+                # Connect when double-clicked and not connected
+                self.on_connect_clicked(None)
+                # After connection is established, refresh services
+                if host_name in self.active_connections:
+                    self.refresh_services(host_name)
+            else:
+                # If already connected, just refresh services
+                self.refresh_services(host_name)
+            return True
+        
+        return False
+
+    def on_local_start_service(self, button):
+        self.control_local_service("start")
+
+    def on_local_stop_service(self, button):
+        self.control_local_service("stop")
+
+    def on_local_restart_service(self, button):
+        self.control_local_service("restart")
+
+    def control_local_service(self, action):
+        """Control a local systemd service"""
+        selection = self.local_service_view.get_selection()
+        model, treeiter = selection.get_selected()
+        if not treeiter:
+            return
+        
+        service_name = model[treeiter][0]
+        
+        try:
+            cmd = ["pkexec", "systemctl", action, service_name]
+            subprocess.run(cmd, check=True)
+            self.show_info_dialog(f"Successfully {action}ed {service_name}")
+            self.refresh_local_services()
+        except subprocess.CalledProcessError as e:
+            self.show_error_dialog(f"Failed to {action} service: {str(e)}")
+
+    def show_local_logs_dialog(self, button):
+        """Show logs for the selected local service"""
+        selection = self.local_service_view.get_selection()
+        model, treeiter = selection.get_selected()
+        if not treeiter:
+            return
+        
+        service_name = model[treeiter][0]
+        
+        dialog = Gtk.Dialog(
+            title=f"Logs - {service_name}",
+            parent=self,
+            flags=0
+        )
+        dialog.set_default_size(800, 600)
+        
+        scrolled, text_label = self.create_dark_text_view()
+        
+        try:
+            result = subprocess.run(
+                ["journalctl", "-u", service_name, "-n", "1000", "--no-pager"],
+                capture_output=True,
+                text=True
+            )
+            
+            # Format and set logs
+            formatted_logs = self.format_log_output(result.stdout)
+            text_label.set_markup(formatted_logs)
+            
+        except Exception as e:
+            text_label.set_text(f"Failed to fetch logs: {str(e)}")
+        
+        dialog.get_content_area().pack_start(scrolled, True, True, 0)
+        dialog.add_button("Close", Gtk.ResponseType.CLOSE)
+        dialog.show_all()
+        dialog.run()
+        dialog.destroy()
+
+    def format_log_output(self, text):
+        """Format log output with Pango markup"""
+        formatted_lines = []
+        for line in text.splitlines():
+            line = GLib.markup_escape_text(line)
+            
+            # Color log levels
+            if "ERROR" in line.upper():
+                line = line.replace(
+                    "error",
+                    '<span foreground="#e74c3c">error</span>',
+                    flags=re.IGNORECASE
+                )
+            elif "WARNING" in line.upper():
+                line = line.replace(
+                    "warning",
+                    '<span foreground="#f1c40f">warning</span>',
+                    flags=re.IGNORECASE
+                )
+            elif "NOTICE" in line.upper():
+                line = line.replace(
+                    "notice",
+                    '<span foreground="#3498db">notice</span>',
+                    flags=re.IGNORECASE
+                )
+            elif "INFO" in line.upper():
+                line = line.replace(
+                    "info",
+                    '<span foreground="#2ecc71">info</span>',
+                    flags=re.IGNORECASE
+                )
+            
+            # Highlight timestamps
+            timestamp_pattern = r'([A-Z][a-z]{2} \d{2} \d{2}:\d{2}:\d{2})'
+            line = re.sub(
+                timestamp_pattern,
+                r'<span foreground="#9b59b6">\1</span>',
+                line
+            )
+            
+            # Highlight PIDs
+            pid_pattern = r'\[(\d+)\]'
+            line = re.sub(
+                pid_pattern,
+                r'[<span foreground="#e67e22">\1</span>]',
+                line
+            )
+                
+            formatted_lines.append(line)
+        
+        return '<span font_family="monospace">' + '\n'.join(formatted_lines) + '</span>'
+
+    def show_edit_host_dialog(self, button):
+        selection = self.hosts_list.get_selected_row()
+        if not selection:
+            self.show_error_dialog("Please select a host to edit")
+            return
+        
+        host_name = selection.get_children()[0].get_children()[1].get_text()
+        host = self.remote_hosts.get(host_name)
+        
+        if not host:
+            self.show_error_dialog("Selected host not found")
+            return
+        
+        dialog = Gtk.Dialog(
+            title="Edit Remote Host",
+            parent=self,
+            flags=0
+        )
+        
+        dialog.add_buttons(
+            Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
+            Gtk.STOCK_OK, Gtk.ResponseType.OK
+        )
+        
+        content = dialog.get_content_area()
+        grid = Gtk.Grid()
+        grid.set_column_spacing(12)
+        grid.set_row_spacing(6)
+        
+        # Input fields
+        name_entry = Gtk.Entry()
+        name_entry.set_text(host.name)
+        host_entry = Gtk.Entry()
+        host_entry.set_text(host.hostname)
+        username_entry = Gtk.Entry()
+        username_entry.set_text(host.username)
+        password_entry = Gtk.Entry()
+        password_entry.set_visibility(False)
+        
+        auth_combo = Gtk.ComboBoxText()
+        auth_combo.append_text("Password")
+        auth_combo.append_text("SSH Key")
+        auth_combo.set_active(0 if host.auth_type == "password" else 1)
+        
+        key_chooser = Gtk.FileChooserButton(title="Select SSH Key")
+        if host.key_path:
+            key_chooser.set_filename(host.key_path)
+        
+        # Make password/key fields sensitive based on auth type
+        def on_auth_changed(combo):
+            is_password = combo.get_active_text() == "Password"
+            password_entry.set_sensitive(is_password)
+            key_chooser.set_sensitive(not is_password)
+        
+        auth_combo.connect("changed", on_auth_changed)
+        on_auth_changed(auth_combo)  # Set initial sensitivity
+        
+        # Layout
+        labels = ["Name:", "Hostname:", "Username:", "Password:", "Auth Type:", "SSH Key:"]
+        widgets = [name_entry, host_entry, username_entry, password_entry, auth_combo, key_chooser]
+        
+        for i, (label, widget) in enumerate(zip(labels, widgets)):
+            grid.attach(Gtk.Label(label=label), 0, i, 1, 1)
+            grid.attach(widget, 1, i, 1, 1)
+        
+        content.add(grid)
+        dialog.show_all()
+        
+        response = dialog.run()
+        if response == Gtk.ResponseType.OK:
+            # Disconnect if connected
+            if host_name in self.active_connections:
+                self.active_connections[host_name].close()
+                del self.active_connections[host_name]
+            
+            # Remove old host
+            del self.remote_hosts[host_name]
+            
+            # Create new host
+            new_host = RemoteHost(
+                name=name_entry.get_text(),
+                hostname=host_entry.get_text(),
+                username=username_entry.get_text(),
+                auth_type="key" if auth_combo.get_active_text() == "SSH Key" else "password",
+                key_path=key_chooser.get_filename() if auth_combo.get_active_text() == "SSH Key" else None
+            )
+            
+            # Update password if using password auth
+            if new_host.auth_type == "password" and password_entry.get_text():
+                keyring.set_password(
+                    "systemd-manager",
+                    f"{new_host.username}@{new_host.hostname}",
+                    password_entry.get_text()
+                )
+            
+            self.remote_hosts[new_host.name] = new_host
+            self.save_hosts()
+            self.refresh_hosts_list()
+        
+        dialog.destroy()
+
+    def create_dark_text_view(self):
+        """Create a themed text view with monospace font"""
+        scrolled = Gtk.ScrolledWindow()
+        label = Gtk.Label()
+        label.set_selectable(True)
+        label.set_line_wrap(True)
+        label.set_xalign(0)  # Align text to left
+        label.set_justify(Gtk.Justification.LEFT)
+        scrolled.add(label)
+        
+        # Add theme classes
+        scrolled.get_style_context().add_class('theme-background')
+        label.get_style_context().add_class('theme-text')
+        
+        return scrolled, label
+
+    def show_logs_dialog(self, button):
+        """Show logs for the selected remote service"""
+        selection = self.remote_service_view.get_selection()
+        model, treeiter = selection.get_selected()
+        if not treeiter:
+            return
+        
+        service_name = model[treeiter][0]
+        host_name = model[treeiter][2]
+        client = self.active_connections.get(host_name)
+        
+        dialog = Gtk.Dialog(
+            title=f"Logs - {service_name}",
+            parent=self,
+            flags=0
+        )
+        dialog.set_default_size(800, 600)
+        
+        scrolled, text_label = self.create_dark_text_view()
+        
+        try:
+            stdin, stdout, stderr = client.exec_command(f"journalctl -u {service_name} -n 1000 --no-pager")
+            logs = stdout.read().decode()
+            
+            # Format and set logs
+            formatted_logs = self.format_log_output(logs)
+            text_label.set_markup(formatted_logs)
+            
+        except Exception as e:
+            text_label.set_text(f"Failed to fetch logs: {str(e)}")
+        
+        dialog.get_content_area().pack_start(scrolled, True, True, 0)
+        dialog.add_button("Close", Gtk.ResponseType.CLOSE)
+        dialog.show_all()
+        dialog.run()
+        dialog.destroy()
+
+    def show_local_logs_dialog(self, button):
+        """Show logs for the selected local service"""
+        selection = self.local_service_view.get_selection()
+        model, treeiter = selection.get_selected()
+        if not treeiter:
+            return
+        
+        service_name = model[treeiter][0]
+        
+        dialog = Gtk.Dialog(
+            title=f"Logs - {service_name}",
+            parent=self,
+            flags=0
+        )
+        dialog.set_default_size(800, 600)
+        
+        scrolled, text_label = self.create_dark_text_view()
+        
+        try:
+            result = subprocess.run(
+                ["journalctl", "-u", service_name, "-n", "1000", "--no-pager"],
+                capture_output=True,
+                text=True
+            )
+            
+            # Format and set logs
+            formatted_logs = self.format_log_output(result.stdout)
+            text_label.set_markup(formatted_logs)
+            
+        except Exception as e:
+            text_label.set_text(f"Failed to fetch logs: {str(e)}")
+        
+        dialog.get_content_area().pack_start(scrolled, True, True, 0)
+        dialog.add_button("Close", Gtk.ResponseType.CLOSE)
+        dialog.show_all()
+        dialog.run()
+        dialog.destroy()
+
+    def format_properties(self, text):
+        """Format systemd properties with Pango markup"""
+        formatted_lines = []
+        for line in text.splitlines():
+            if '=' in line:
+                key, value = line.split('=', 1)
+                key = GLib.markup_escape_text(key)
+                value = GLib.markup_escape_text(value)
+                
+                # Color code different types of values
+                if value.lower() in ['yes', 'true', 'active', 'running', 'enabled']:
+                    value = f'<span foreground="#2ecc71">{value}</span>'  # Green
+                elif value.lower() in ['no', 'false', 'inactive', 'dead', 'disabled', 'failed']:
+                    value = f'<span foreground="#e74c3c">{value}</span>'  # Red
+                elif value.startswith('/'):
+                    value = f'<span foreground="#3498db">{value}</span>'  # Blue for paths
+                elif value.isdigit():
+                    value = f'<span foreground="#e67e22">{value}</span>'  # Orange for numbers
+                elif '@' in value or '.' in value:  # Likely an email or domain
+                    value = f'<span foreground="#9b59b6">{value}</span>'  # Purple
+                
+                # Key is always colored consistently
+                formatted_lines.append(
+                    f'<span foreground="#f1c40f">{key}</span>={value}'
+                )
+        
+        return '<span font_family="monospace">' + '\n'.join(formatted_lines) + '</span>'
+
+    def on_service_activated(self, tree_view, path, column):
+        """Handle double-click on remote service"""
+        model = tree_view.get_model()
+        service_name = model[path][0]
+        host_name = model[path][2]
+        self.show_service_details(service_name, is_remote=True, host_name=host_name)
+
+    def on_service_button_press(self, tree_view, event):
+        """Handle right-click for context menu"""
+        if event.button == 3:  # Right click
+            path = tree_view.get_path_at_pos(int(event.x), int(event.y))
+            if path is None:
+                return False
+            
+            tree_view.get_selection().select_path(path[0])
+            
+            menu = Gtk.Menu()
+            items = [
+                ("Start", self.on_start_service),
+                ("Stop", self.on_stop_service),
+                ("Restart", self.on_restart_service),
+                ("Enable", self.on_enable_service),
+                ("Disable", self.on_disable_service),
+                ("View Logs", self.show_logs_dialog),
+                ("View Details", lambda _: self.show_service_details(
+                    self.remote_service_store[path[0]][0],
+                    self.remote_service_store[path[0]][2]
+                ))
+            ]
+            
+            for label, callback in items:
+                item = Gtk.MenuItem(label=label)
+                item.connect("activate", callback)
+                menu.append(item)
+            
+            menu.show_all()
+            menu.popup_at_pointer(event)
+            return True
+        return False
+
+    def show_service_details(self, service_name, is_remote=False, host_name=None):
+        """Show detailed service information using Rich formatting"""
+        dialog = Gtk.Dialog(
+            title=f"Service Details - {service_name}",
+            parent=self,
+            flags=0
+        )
+        dialog.set_default_size(800, 600)
+        
+        # Create notebook for tabs
+        notebook = Gtk.Notebook()
+        notebook.set_margin_start(12)
+        notebook.set_margin_end(12)
+        notebook.set_margin_bottom(12)
+        
+        # Status tab with dark theme
+        status_scroll = Gtk.ScrolledWindow()
+        status_label = Gtk.Label()  # Use Label instead of TextView
+        status_label.set_selectable(True)  # Make text selectable
+        status_label.set_line_wrap(True)
+        status_label.set_xalign(0)  # Align text to left
+        status_scroll.add(status_label)
+        notebook.append_page(status_scroll, Gtk.Label(label="Status"))
+        
+        # Properties tab
+        props_scroll, props_label = self.create_dark_text_view()
+        notebook.append_page(props_scroll, Gtk.Label(label="Properties"))
+        
+        # Create header box for status labels
+        header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        header_box.set_margin_start(12)
+        header_box.set_margin_end(12)
+        header_box.set_margin_top(12)
+        header_box.set_margin_bottom(12)
+        
+        try:
+            if is_remote:
+                client = self.active_connections.get(host_name)
+                if not client:
+                    raise Exception("Not connected to host")
+                
+                # Get enabled status
+                stdin, stdout, stderr = client.exec_command(f"systemctl is-enabled {service_name}")
+                enabled_status = stdout.read().decode().strip()
+                
+                # Get active status
+                stdin, stdout, stderr = client.exec_command(f"systemctl is-active {service_name}")
+                active_status = stdout.read().decode().strip()
+                
+                # Get status output
+                stdin, stdout, stderr = client.exec_command(f"systemctl status {service_name}")
+                status_text = stdout.read().decode()
+                
+                # Apply color formatting and set markup
+                formatted_text = self.format_status_output(status_text)
+                status_label.set_markup(formatted_text)
+                
+                # Get properties
+                stdin, stdout, stderr = client.exec_command(f"systemctl show {service_name}")
+                details = stdout.read().decode()
+                
+                # Format and set properties text
+                formatted_props = self.format_properties(details)
+                props_label.set_markup(formatted_props)
+                
+            else:
+                # Get local service status
+                result = subprocess.run(["systemctl", "is-enabled", service_name], capture_output=True, text=True)
+                enabled_status = result.stdout.strip()
+                
+                result = subprocess.run(["systemctl", "is-active", service_name], capture_output=True, text=True)
+                active_status = result.stdout.strip()
+                
+                # Get local status output
+                result = subprocess.run(["systemctl", "status", service_name], capture_output=True, text=True)
+                
+                # Apply color formatting and set markup
+                formatted_text = self.format_status_output(result.stdout)
+                status_label.set_markup(formatted_text)
+                
+                # Get local properties
+                result = subprocess.run(["systemctl", "show", service_name], capture_output=True, text=True)
+                details = result.stdout
+                
+                # Format and set properties text
+                formatted_props = self.format_properties(details)
+                props_label.set_markup(formatted_props)
+                
+            # Create status labels with colored backgrounds
+            enabled_label = Gtk.Label()
+            enabled_label.set_markup(
+                f'<span background="{self.get_status_color(enabled_status)}" foreground="white">'
+                f' {enabled_status.upper()} </span>'
+            )
+            
+            active_label = Gtk.Label()
+            active_label.set_markup(
+                f'<span background="{self.get_status_color(active_status)}" foreground="white">'
+                f' {active_status.upper()} </span>'
+            )
+            
+            header_box.pack_start(Gtk.Label(label="Status:"), False, False, 0)
+            header_box.pack_start(active_label, False, False, 0)
+            header_box.pack_start(Gtk.Label(label="Boot Status:"), False, False, 0)
+            header_box.pack_start(enabled_label, False, False, 0)
+            
+        except Exception as e:
+            self.logger.error(f"Failed to get service status: {str(e)}")
+            header_box.pack_start(Gtk.Label(label=f"Error: {str(e)}"), True, True, 0)
+            status_label.set_text(f"Failed to get service details: {str(e)}")
+            props_label.set_text(f"Failed to get service properties: {str(e)}")
+        
+        # Add dark theme CSS
+        css_provider = Gtk.CssProvider()
+        css_provider.load_from_data(b"""
+            scrolledwindow {
+                background-color: #1c1c1c;
+            }
+            label {
+                color: #ffffff;
+                background-color: #1c1c1c;
+                padding: 10px;
+            }
+        """)
+        
+        status_scroll.get_style_context().add_provider(
+            css_provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        )
+        status_label.get_style_context().add_provider(
+            css_provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        )
+        
+        # Add header and notebook to dialog
+        content_area = dialog.get_content_area()
+        content_area.pack_start(header_box, False, False, 0)
+        content_area.pack_start(notebook, True, True, 0)
+        
+        dialog.add_button("Close", Gtk.ResponseType.CLOSE)
+        dialog.show_all()
+        dialog.run()
+        dialog.destroy()
+
+    def get_status_color(self, status):
+        """Get background color for status label"""
+        status = status.lower()
+        if status in ['active', 'running', 'enabled']:
+            return "#2ecc71"  # Green
+        elif status in ['inactive', 'dead', 'disabled']:
+            return "#e74c3c"  # Red
+        elif status in ['activating', 'deactivating']:
+            return "#f1c40f"  # Yellow
         else:
-            entry.remove_css_class("error")
-    
-    def get_service_template(self):
-        return """[Unit]
+            return "#95a5a6"  # Gray
+
+    def on_local_service_activated(self, tree_view, path, column):
+        """Handle double-click on local service"""
+        model = tree_view.get_model()
+        service_name = model[path][0]
+        self.show_service_details(service_name, is_remote=False)
+
+    def on_local_service_button_press(self, tree_view, event):
+        """Handle right-click for context menu on local services"""
+        if event.button == 3:  # Right click
+            path = tree_view.get_path_at_pos(int(event.x), int(event.y))
+            if path is None:
+                return False
+            
+            tree_view.get_selection().select_path(path[0])
+            
+            menu = Gtk.Menu()
+            items = [
+                ("Start", self.on_local_start_service),
+                ("Stop", self.on_local_stop_service),
+                ("Restart", self.on_local_restart_service),
+                ("Enable", self.on_local_enable_service),
+                ("Disable", self.on_local_disable_service),
+                ("View Logs", self.show_local_logs_dialog),
+                ("View Details", lambda _: self.show_local_service_details(
+                    self.local_service_store[path[0]][0]
+                ))
+            ]
+            
+            for label, callback in items:
+                item = Gtk.MenuItem(label=label)
+                item.connect("activate", callback)
+                menu.append(item)
+            
+            menu.show_all()
+            menu.popup_at_pointer(event)
+            return True
+        return False
+
+    def show_local_service_details(self, service_name):
+        """Show detailed information for local service"""
+        dialog = Gtk.Dialog(
+            title=f"Service Details - {service_name.replace('.service', '')}",
+            parent=self,
+            flags=0
+        )
+        dialog.add_buttons(Gtk.STOCK_CLOSE, Gtk.ResponseType.CLOSE)
+        dialog.set_default_size(600, 400)
+        
+        content = dialog.get_content_area()
+        
+        # Add status header
+        header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        header_box.set_margin_start(12)
+        header_box.set_margin_end(12)
+        header_box.set_margin_top(12)
+        header_box.set_margin_bottom(12)
+        
+        try:
+            # Get enabled status
+            result = subprocess.run(
+                ["systemctl", "is-enabled", service_name],
+                capture_output=True,
+                text=True
+            )
+            enabled_status = result.stdout.strip()
+            
+            # Get active status
+            result = subprocess.run(
+                ["systemctl", "is-active", service_name],
+                capture_output=True,
+                text=True
+            )
+            active_status = result.stdout.strip()
+            
+            # Create status labels with colored backgrounds
+            enabled_label = Gtk.Label()
+            enabled_label.set_markup(
+                f'<span background="{self.get_status_color(enabled_status)}" foreground="white">'
+                f' {enabled_status.upper()} </span>'
+            )
+            
+            active_label = Gtk.Label()
+            active_label.set_markup(
+                f'<span background="{self.get_status_color(active_status)}" foreground="white">'
+                f' {active_status.upper()} </span>'
+            )
+            
+            header_box.pack_start(Gtk.Label(label="Status:"), False, False, 0)
+            header_box.pack_start(active_label, False, False, 0)
+            header_box.pack_start(Gtk.Label(label="Boot Status:"), False, False, 0)
+            header_box.pack_start(enabled_label, False, False, 0)
+            
+        except Exception as e:
+            self.logger.error(f"Failed to get service status: {str(e)}")
+        
+        content.pack_start(header_box, False, False, 0)
+        
+        # Add notebook with details
+        notebook = Gtk.Notebook()
+        
+        # Status page
+        status_view = self.create_log_text_view()
+        status_scroll = Gtk.ScrolledWindow()
+        status_scroll.add(status_view)
+        notebook.append_page(status_scroll, Gtk.Label(label="Status"))
+        
+        # Properties page
+        props_view = self.create_log_text_view()
+        props_scroll = Gtk.ScrolledWindow()
+        props_scroll.add(props_view)
+        notebook.append_page(props_scroll, Gtk.Label(label="Properties"))
+        
+        content.pack_start(notebook, True, True, 0)
+        
+        try:
+            # Get status
+            result = subprocess.run(
+                ["systemctl", "status", service_name],
+                capture_output=True,
+                text=True
+            )
+            status_view.get_buffer().set_text(result.stdout)
+            
+            # Get properties
+            result = subprocess.run(
+                ["systemctl", "show", service_name],
+                capture_output=True,
+                text=True
+            )
+            props_view.get_buffer().set_text(result.stdout)
+            
+        except Exception as e:
+            self.show_error_dialog(f"Failed to fetch service details: {str(e)}")
+        
+        dialog.show_all()
+        dialog.run()
+        dialog.destroy()
+
+    def format_service_cell(self, column, cell, model, iter, data):
+        """Format service name and description in the cell"""
+        try:
+            name = model.get_value(iter, 0)
+            description = model.get_value(iter, 3)  # Description is in column 3
+            
+            if description:
+                markup = f"<b>{GLib.markup_escape_text(name)}</b>\n<small>{GLib.markup_escape_text(description)}</small>"
+            else:
+                markup = f"<b>{GLib.markup_escape_text(name)}</b>"
+                
+            cell.set_property("markup", markup)
+            
+        except Exception as e:
+            self.logger.error(f"Error formatting service cell: {str(e)}")
+            cell.set_property("text", model.get_value(iter, 0))
+
+    def format_local_service_cell(self, column, cell, model, iter, data):
+        """Format service name and description in a single cell for local services"""
+        name = model[iter][0].replace(".service", "")
+        description = model[iter][2]
+        
+        if description:
+            cell.set_property("markup", 
+                f'<b>{name}</b>\n<span size="smaller" style="italic">{description}</span>')
+        else:
+            cell.set_property("markup", f'<b>{name}</b>')
+
+    def on_selection_changed(self, list_box):
+        """Handle selection changes in the hosts list"""
+        # Only clear the service list
+        self.remote_service_store.clear()
+
+    def on_start_service(self, button):
+        self.control_service("start")
+
+    def on_stop_service(self, button):
+        self.control_service("stop")
+
+    def on_restart_service(self, button):
+        self.control_service("restart")
+
+    def control_service(self, action):
+        """Control a remote systemd service"""
+        selection = self.remote_service_view.get_selection()
+        model, treeiter = selection.get_selected()
+        if not treeiter:
+            return
+            
+        service_name = model[treeiter][0]
+        host_name = model[treeiter][2]
+        
+        client = self.active_connections.get(host_name)
+        if not client:
+            self.show_error_dialog("Host not connected")
+            return
+            
+        try:
+            success, sudo_password = self.show_sudo_password_dialog(
+                host=host_name,
+                command=f"systemctl {action} {service_name}"
+            )
+            
+            if not success:
+                return
+            
+            cmd = f"echo '{sudo_password}' | sudo -S systemctl {action} {service_name}"
+            stdin, stdout, stderr = client.exec_command(cmd)
+            error = stderr.read().decode()
+            
+            if error and not "password" in error.lower():
+                self.show_error_dialog(f"Failed to {action} service: {error}")
+            else:
+                self.show_info_dialog(f"Successfully {action}ed {service_name}")
+                self.refresh_services(host_name)
+                
+        except Exception as e:
+            self.show_error_dialog(f"Failed to {action} service: {str(e)}")
+
+    def show_logs_dialog(self, button):
+        """Show logs for the selected remote service"""
+        selection = self.remote_service_view.get_selection()
+        model, treeiter = selection.get_selected()
+        if not treeiter:
+            return
+            
+        service_name = model[treeiter][0]
+        host_name = model[treeiter][2]
+        client = self.active_connections.get(host_name)
+            
+        dialog = Gtk.Dialog(
+            title=f"Logs - {service_name}",
+            parent=self,
+            flags=0
+        )
+        dialog.set_default_size(800, 600)
+        
+        scrolled, text_label = self.create_dark_text_view()
+        
+        try:
+            stdin, stdout, stderr = client.exec_command(f"journalctl -u {service_name} -n 1000 --no-pager")
+            logs = stdout.read().decode()
+            
+            # Format and set logs
+            formatted_logs = self.format_log_output(logs)
+            text_label.set_markup(formatted_logs)
+            
+        except Exception as e:
+            text_label.set_text(f"Failed to fetch logs: {str(e)}")
+        
+        dialog.get_content_area().pack_start(scrolled, True, True, 0)
+        dialog.add_button("Close", Gtk.ResponseType.CLOSE)
+        dialog.show_all()
+        dialog.run()
+        dialog.destroy()
+
+    def show_info_dialog(self, message: str):
+        """Show an information dialog with selectable text"""
+        dialog = Gtk.MessageDialog(
+            transient_for=self,
+            flags=0,
+            message_type=Gtk.MessageType.INFO,
+            buttons=Gtk.ButtonsType.OK
+        )
+        dialog.set_default_size(400, -1)  # Set minimum width
+        
+        # Create scrolled text view
+        scrolled = Gtk.ScrolledWindow()
+        text_view = GtkSource.View()
+        text_view.set_editable(False)
+        text_view.set_cursor_visible(True)
+        text_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        text_view.set_left_margin(10)
+        text_view.set_right_margin(10)
+        
+        # Create buffer
+        text_buffer = GtkSource.Buffer()
+        text_view.set_buffer(text_buffer)
+        text_buffer.set_text(message)
+        
+        scrolled.add(text_view)
+        scrolled.set_min_content_height(60)
+        scrolled.set_min_content_width(350)  # Set minimum content width
+        
+        content_area = dialog.get_content_area()
+        content_area.set_margin_start(12)
+        content_area.set_margin_end(12)
+        content_area.set_margin_top(12)
+        content_area.set_margin_bottom(12)
+        content_area.add(scrolled)
+        
+        dialog.show_all()
+        dialog.run()
+        dialog.destroy()
+
+    def show_error_dialog(self, message: str):
+        """Show an error dialog with selectable text"""
+        dialog = Gtk.MessageDialog(
+            transient_for=self,
+            flags=0,
+            message_type=Gtk.MessageType.ERROR,
+            buttons=Gtk.ButtonsType.OK
+        )
+        dialog.set_default_size(400, -1)  # Set minimum width
+        
+        # Create scrolled text view
+        scrolled = Gtk.ScrolledWindow()
+        text_view = GtkSource.View()
+        text_view.set_editable(False)
+        text_view.set_cursor_visible(True)
+        text_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        text_view.set_left_margin(10)
+        text_view.set_right_margin(10)
+        
+        # Create buffer
+        text_buffer = GtkSource.Buffer()
+        text_view.set_buffer(text_buffer)
+        text_buffer.set_text(message)
+        
+        scrolled.add(text_view)
+        scrolled.set_min_content_height(60)
+        scrolled.set_min_content_width(350)  # Set minimum content width
+        
+        content_area = dialog.get_content_area()
+        content_area.set_margin_start(12)
+        content_area.set_margin_end(12)
+        content_area.set_margin_top(12)
+        content_area.set_margin_bottom(12)
+        content_area.add(scrolled)
+        
+        dialog.show_all()
+        dialog.run()
+        dialog.destroy()
+
+    def on_enable_service(self, button):
+        self.control_service("enable")
+
+    def on_disable_service(self, button):
+        self.control_service("disable")
+
+    def on_local_enable_service(self, button):
+        self.control_local_service("enable")
+
+    def on_local_disable_service(self, button):
+        self.control_local_service("disable")
+
+    def show_sudo_password_dialog(self, host=None, command=None):
+        """Show an improved sudo password dialog with context
+        
+        Args:
+            host: Optional[str] - Remote hostname if applicable
+            command: Optional[str] - Command that requires sudo
+            
+        Returns:
+            tuple(bool, str) - (Success, Password)
+        """
+        password_dialog = Gtk.MessageDialog(
+            transient_for=self,
+            flags=0,
+            message_type=Gtk.MessageType.QUESTION,
+            buttons=Gtk.ButtonsType.OK_CANCEL,
+            text="Sudo Authentication Required"
+        )
+        
+        # Create content box
+        content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        content_box.set_margin_start(12)
+        content_box.set_margin_end(12)
+        content_box.set_margin_top(12)
+        content_box.set_margin_bottom(12)
+        
+        # Add context information
+        context_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        
+        if host:
+            host_label = Gtk.Label()
+            host_label.set_markup(f"<b>Host:</b> {host}")
+            host_label.set_halign(Gtk.Align.START)
+            context_box.pack_start(host_label, False, False, 0)
+        
+        user_label = Gtk.Label()
+        if host:
+            user = self.remote_hosts[host].username
+        else:
+            import os
+            user = os.getenv('USER')
+        user_label.set_markup(f"<b>User:</b> {user}")
+        user_label.set_halign(Gtk.Align.START)
+        context_box.pack_start(user_label, False, False, 0)
+        
+        if command:
+            cmd_label = Gtk.Label()
+            cmd_label.set_markup(f"<b>Command:</b> {command}")
+            cmd_label.set_halign(Gtk.Align.START)
+            cmd_label.set_line_wrap(True)
+            context_box.pack_start(cmd_label, False, False, 0)
+        
+        content_box.pack_start(context_box, False, False, 0)
+        
+        # Add password entry
+        entry_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        password_label = Gtk.Label(label="Password:")
+        password_entry = Gtk.Entry()
+        password_entry.set_visibility(False)
+        password_entry.set_placeholder_text("Enter sudo password")
+        
+        # Add Enter key handling
+        def on_password_entry_activate(entry):
+            password_dialog.response(Gtk.ResponseType.OK)
+        password_entry.connect("activate", on_password_entry_activate)
+        
+        entry_box.pack_start(password_label, False, False, 0)
+        entry_box.pack_start(password_entry, True, True, 0)
+        content_box.pack_start(entry_box, False, False, 0)
+        
+        password_dialog.get_content_area().add(content_box)
+        password_dialog.show_all()
+        password_entry.grab_focus()  # Give focus to password entry
+        
+        response = password_dialog.run()
+        password = password_entry.get_text()
+        password_dialog.destroy()
+        
+        return response == Gtk.ResponseType.OK, password
+
+    def reload_systemd_config(self, button=None):
+        """Reload systemd configuration"""
+        is_remote = self.stack.get_visible_child_name() == "remote"
+        
+        if is_remote:
+            # Get selected remote host
+            selection = self.hosts_list.get_selected_row()
+            if not selection:
+                self.show_error_dialog("Please select a remote host")
+                return
+            
+            host_name = selection.get_children()[0].get_children()[1].get_text()
+            client = self.active_connections.get(host_name)
+            if not client:
+                self.show_error_dialog("Please connect to the remote host first")
+                return
+            
+            try:
+                success, sudo_password = self.show_sudo_password_dialog(
+                    host=host_name,
+                    command="systemctl daemon-reload"
+                )
+            except Exception as e:
+                self.show_error_dialog(f"Failed to show password dialog: {str(e)}")
+                return
+                
+                if not success:
+                    return
+                    
+                # Execute remote reload
+                cmd = f"echo '{sudo_password}' | sudo -S systemctl daemon-reload"
+                stdin, stdout, stderr = client.exec_command(cmd)
+                error = stderr.read().decode()
+                
+                if error and not "password" in error.lower():
+                    self.show_error_dialog(f"Failed to reload configuration: {error}")
+                else:
+                    self.show_info_dialog("Systemd configuration reloaded")
+                    self.refresh_services(host_name)
+            except Exception as e:
+                self.show_error_dialog(f"Failed to reload configuration: {str(e)}")
+        else:
+            # Local reload
+            try:
+                subprocess.run(["pkexec", "systemctl", "daemon-reload"], check=True)
+                self.show_info_dialog("Systemd configuration reloaded")
+                self.refresh_local_services()
+            except subprocess.CalledProcessError as e:
+                self.show_error_dialog(f"Failed to reload configuration: {str(e)}")
+
+    def show_create_service_dialog(self, button):
+        """Show dialog to create a new systemd service"""
+        # Check if we're on the remote page and a host is connected
+        is_remote = self.stack.get_visible_child_name() == "remote"
+        if is_remote:
+            selection = self.hosts_list.get_selected_row()
+            if not selection:
+                self.show_error_dialog("Please select a remote host")
+                return
+            
+            host_name = selection.get_children()[0].get_children()[1].get_text()
+            client = self.active_connections.get(host_name)
+            if not client:
+                self.show_error_dialog("Please connect to the remote host first")
+                return
+        
+        # Create dialog
+        dialog = Gtk.Dialog(
+            title="Create Service",
+            parent=self,
+            flags=0
+        )
+        dialog.add_buttons(
+            Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
+            Gtk.STOCK_OK, Gtk.ResponseType.OK
+        )
+        dialog.set_default_size(700, 500)
+        
+        content = dialog.get_content_area()
+        content.set_spacing(6)
+        
+        # Service name field at the top
+        name_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        name_box.set_margin_start(12)
+        name_box.set_margin_end(12)
+        name_box.set_margin_top(12)
+        
+        name_label = Gtk.Label(label="Service Name:")
+        name_entry = Gtk.Entry()
+        name_entry.set_placeholder_text("my-service")
+        
+        name_box.pack_start(name_label, False, False, 0)
+        name_box.pack_start(name_entry, True, True, 0)
+        
+        content.add(name_box)
+        
+        # Create source view for editing
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_margin_start(12)
+        scrolled.set_margin_end(12)
+        scrolled.set_margin_bottom(12)
+        
+        # Set up the source view
+        source_buffer = GtkSource.Buffer()
+        source_buffer.set_language(
+            GtkSource.LanguageManager.get_default().get_language('ini')
+        )
+        source_buffer.set_style_scheme(
+            GtkSource.StyleSchemeManager.get_default().get_scheme('oblivion')
+        )
+        
+        source_view = GtkSource.View.new_with_buffer(source_buffer)
+        source_view.set_show_line_numbers(True)
+        source_view.set_auto_indent(True)
+        source_view.set_tab_width(4)
+        source_view.set_indent_width(4)
+        source_view.set_insert_spaces_instead_of_tabs(True)
+        source_view.set_smart_backspace(True)
+        
+        # Set default template
+        template = """[Unit]
 Description=My custom service
 After=network.target
 
@@ -1294,226 +1926,439 @@ ExecStart=/usr/bin/sleep infinity
 [Install]
 WantedBy=multi-user.target
 """
-
-    def on_save_clicked(self, button):
-        buffer = self.source_view.get_buffer()
-        text = buffer.get_text(buffer.get_start_iter(), buffer.get_end_iter(), True)
+        source_buffer.set_text(template)
         
-        # Create modern file chooser dialog
-        dialog = Gtk.FileChooserDialog(
-            title="Save Service File",
-            transient_for=self,
-            action=Gtk.FileChooserAction.SAVE
-        )
+        scrolled.add(source_view)
+        content.pack_start(scrolled, True, True, 0)
         
-        # Add buttons using modern approach
-        dialog.add_button("_Cancel", Gtk.ResponseType.CANCEL)
-        dialog.add_button("_Save", Gtk.ResponseType.ACCEPT)
+        dialog.show_all()
         
-        # Set up file filters
-        filters = Gtk.FileFilter()
-        filters.set_name("Service files")
-        filters.add_pattern("*.service")
-        dialog.set_filter(filters)
-        
-        # Set default save location based on environment
-        if SystemdManagerWindow.is_running_in_flatpak():
-            system_path = "/run/host/etc/systemd/system"
-        else:
-            system_path = "/etc/systemd/system"
-        
-        dialog.set_current_folder(Gio.File.new_for_path(system_path))
-        
-        # Suggest default filename
-        dialog.set_current_name("myservice.service")
-        
-        # Show the dialog and handle response
-        dialog.connect("response", self._on_save_response, text)
-        dialog.present()
-
-    def _on_save_response(self, dialog, response, text):
-        if response == Gtk.ResponseType.ACCEPT:
-            try:
-                file = dialog.get_file()
-                if file:
-                    file_path = file.get_path()
-                    home_dir = os.path.expanduser("~")
+        while True:
+            response = dialog.run()
+            if response == Gtk.ResponseType.OK:
+                service_name = name_entry.get_text()
+                if not service_name:
+                    self.show_error_dialog("Please enter a service name")
+                    continue
                     
-                    # Log the save attempt
-                    self.parent_window.log_message(f"Creating new service file: {file_path}")
-                    
-                    # Check if saving to user's home directory or its subdirectories
-                    if file_path.startswith(home_dir):
-                        # Direct save without pkexec for user directory
-                        with open(file_path, 'w') as f:
-                            f.write(text)
-                        os.chmod(file_path, 0o644)  # Set permissions without pkexec
-                        self.parent_window.log_message(f"Service file saved in user directory: {file_path}")
+                if not service_name.endswith('.service'):
+                    service_name += '.service'
+                
+                service_content = source_buffer.get_text(
+                    source_buffer.get_start_iter(),
+                    source_buffer.get_end_iter(),
+                    True
+                )
+                
+                try:
+                    if is_remote:
+                        self.logger.info(f"Creating remote service {service_name}")
+                        
+                        # Check if we're root first
+                        stdin, stdout, stderr = client.exec_command("id -u")
+                        uid = stdout.read().decode().strip()
+                        is_root = (uid == "0")
+                        
+                        if not is_root:
+                            # Use the existing better sudo dialog
+                            success, sudo_password = self.show_sudo_password_dialog(
+                                host=host_name,
+                                command=f"Create and configure service: {service_name}"
+                            )
+                            if not success:
+                                continue
+                            
+                            # Function to run sudo command with saved password
+                            def run_sudo_command(cmd):
+                                full_cmd = f"echo '{sudo_password}' | sudo -S {cmd}"
+                                stdin, stdout, stderr = client.exec_command(full_cmd)
+                                error = stderr.read().decode()
+                                output = stdout.read().decode()
+                                return output, error
+                        else:
+                            # We're root, no need for sudo
+                            def run_sudo_command(cmd):
+                                stdin, stdout, stderr = client.exec_command(cmd)
+                                error = stderr.read().decode()
+                                output = stdout.read().decode()
+                                return output, error
+                        
+                        # Create service file and write content
+                        self.logger.debug("Creating service file and writing content")
+                        temp_file = f"/tmp/{service_name}"
+                        cmd = f"echo '{service_content}' > {temp_file}"
+                        stdin, stdout, stderr = client.exec_command(cmd)
+                        error = stderr.read().decode()
+                        
+                        if error:
+                            self.logger.error(f"Failed to create temp file: {error}")
+                            self.show_error_dialog(f"Failed to create temp file: {error}")
+                            continue
+                            
+                        # Move file to systemd directory
+                        cmd = f"mv {temp_file} /etc/systemd/system/" if is_root else f"echo '{sudo_password}' | sudo -S mv {temp_file} /etc/systemd/system/"
+                        stdin, stdout, stderr = client.exec_command(cmd)
+                        error = stderr.read().decode()
+                        
+                        if error and (not is_root and not "password" in error.lower()):
+                            self.logger.error(f"Failed to move service file: {error}")
+                            self.show_error_dialog(f"Failed to move service file: {error}")
+                            continue
+                            
+                        # Set proper permissions
+                        self.logger.debug("Setting file permissions")
+                        cmd = f"chmod 644 /etc/systemd/system/{service_name}" if is_root else f"echo '{sudo_password}' | sudo -S chmod 644 /etc/systemd/system/{service_name}"
+                        stdin, stdout, stderr = client.exec_command(cmd)
+                        error = stderr.read().decode()
+                        
+                        if error and (not is_root and not "password" in error.lower()):
+                            self.logger.error(f"Failed to set permissions: {error}")
+                            self.show_error_dialog(f"Failed to set permissions: {error}")
+                            continue
+                        
+                        # Verify the file exists
+                        cmd = f"test -f /etc/systemd/system/{service_name} && echo 'exists'"
+                        stdin, stdout, stderr = client.exec_command(cmd)
+                        output = stdout.read().decode().strip()
+                        
+                        if output != 'exists':
+                            self.logger.error("Service file was not created")
+                            self.show_error_dialog("Failed to create service file")
+                            continue
+                        
+                        # Reload systemd
+                        self.logger.debug("Reloading systemd")
+                        cmd = f"echo '{sudo_password}' | sudo -S systemctl daemon-reload"
+                        stdin, stdout, stderr = client.exec_command(cmd)
+                        error = stderr.read().decode()
+                        
+                        if error and not "password" in error.lower():
+                            self.logger.error(f"Failed to reload systemd: {error}")
+                            self.show_error_dialog(f"Failed to reload systemd: {error}")
+                            continue
+                            
                     else:
-                        # Use pkexec for system directories
-                        with open('/tmp/temp_service_file', 'w') as temp_file:
-                            temp_file.write(text)
+                        # Get sudo password once for all local operations
+                        success, sudo_password = self.show_sudo_password_dialog(
+                            command=f"Create and configure service: {service_name}"
+                        )
+                        if not success:
+                            continue
                         
-                        # Build the mv command
-                        cmd = ["pkexec", "mv", "/tmp/temp_service_file", file_path]
-                        if SystemdManagerWindow.is_running_in_flatpak():
-                            cmd = ["flatpak-spawn", "--host"] + cmd
+                        # Helper function for local sudo commands
+                        def run_local_sudo_command(cmd, input_data=None):
+                            process = subprocess.Popen(
+                                ["sudo", "-S"] + cmd,
+                                stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE,
+                                text=True
+                            )
+                            
+                            if input_data:
+                                stdout, stderr = process.communicate(f"{sudo_password}\n{input_data}")
+                            else:
+                                stdout, stderr = process.communicate(sudo_password + "\n")
+                            
+                            return process.returncode, stdout, stderr
                         
-                        # Execute the command
-                        subprocess.run(cmd, check=True)
+                        # Create service file
+                        returncode, stdout, stderr = run_local_sudo_command(
+                            ["tee", f"/etc/systemd/system/{service_name}"],
+                            service_content
+                        )
+                        
+                        if returncode != 0:
+                            self.show_error_dialog(f"Failed to create service file: {stderr}")
+                            continue
                         
                         # Set proper permissions
-                        chmod_cmd = ["pkexec", "chmod", "644", file_path]
-                        if SystemdManagerWindow.is_running_in_flatpak():
-                            chmod_cmd = ["flatpak-spawn", "--host"] + chmod_cmd
-                        subprocess.run(chmod_cmd, check=True)
-                        self.parent_window.log_message(f"Service file saved in system directory: {file_path}")
+                        returncode, stdout, stderr = run_local_sudo_command(
+                            ["chmod", "644", f"/etc/systemd/system/{service_name}"]
+                        )
+                        
+                        if returncode != 0:
+                            self.show_error_dialog(f"Failed to set permissions: {stderr}")
+                            continue
+                        
+                        # Reload systemd
+                        returncode, stdout, stderr = run_local_sudo_command(
+                            ["systemctl", "daemon-reload"]
+                        )
+                        
+                        if returncode != 0:
+                            self.show_error_dialog(f"Failed to reload systemd: {stderr}")
+                            continue
                     
-                    # Show success message with option to start service
-                    success_dialog = Adw.MessageDialog(
+                    # Ask if the service should be started (moved outside the if/else)
+                    start_dialog = Gtk.MessageDialog(
                         transient_for=self,
-                        heading="Success",
-                        body=f"Service file saved successfully to {file_path}\nWould you like to start the service now?"
+                        flags=0,
+                        message_type=Gtk.MessageType.QUESTION,
+                        buttons=Gtk.ButtonsType.YES_NO,
+                        text="Service Created"
                     )
-                    success_dialog.add_response("no", "_No")
-                    success_dialog.add_response("yes", "_Yes")
-                    success_dialog.set_default_response("no")
-                    success_dialog.set_close_response("no")
+                    start_dialog.format_secondary_text(
+                        f"Service {service_name} was created successfully. Would you like to start it now?"
+                    )
                     
-                    # Store file path for the start service handler
-                    self.saved_service_path = file_path
-                    success_dialog.connect("response", self._on_start_service_response)
-                    success_dialog.present()
+                    start_response = start_dialog.run()
+                    start_dialog.destroy()
                     
-            except Exception as e:
-                error_dialog = Adw.MessageDialog(
-                    transient_for=self,
-                    heading="Error",
-                    body=f"Error saving file: {str(e)}"
-                )
-                error_dialog.add_response("ok", "_OK")
-                error_dialog.present()
+                    if start_response == Gtk.ResponseType.YES:
+                        if is_remote:
+                            output, error = run_sudo_command(f"systemctl start {service_name}")
+                            if error and not "password" in error.lower():
+                                self.logger.error(f"Failed to start service: {error}")
+                                self.show_error_dialog(f"Failed to start service: {error}")
+                            else:
+                                self.show_info_dialog(f"Service {service_name} started successfully")
+                        else:
+                            returncode, stdout, stderr = run_local_sudo_command(
+                                ["systemctl", "start", service_name]
+                            )
+                            if returncode == 0:
+                                self.show_info_dialog(f"Service {service_name} started successfully")
+                            else:
+                                self.show_error_dialog(f"Failed to start service: {stderr}")
+                    
+                    # Refresh the appropriate service list
+                    if is_remote:
+                        GLib.timeout_add(1000, lambda: self.refresh_services(host_name))
+                    else:
+                        GLib.timeout_add(1000, self.refresh_local_services)
+                    
+                    break
+                    
+                except Exception as e:
+                    self.show_error_dialog(f"Failed to create service: {str(e)}")
+                    continue
+            else:
+                break
         
         dialog.destroy()
 
-    def _on_start_service_response(self, dialog, response):
-        """Handle response to start service question"""
-        dialog.destroy()
-        
-        if response == "yes":
-            try:
-                # Get service name from path
-                service_name = os.path.basename(self.saved_service_path)
-                is_user_service = self.saved_service_path.startswith(os.path.expanduser("~"))
-                
-                # Build start command
-                start_cmd = ["systemctl"]
-                if is_user_service:
-                    start_cmd.append("--user")
-                else:
-                    start_cmd.insert(0, "pkexec")
-                start_cmd.extend(["start", service_name])
-                
-                # Run the command
-                if SystemdManagerWindow.is_running_in_flatpak():
-                    start_cmd = ["flatpak-spawn", "--host"] + start_cmd
-                subprocess.run(start_cmd, check=True)
-                
-                # Show success message
-                start_success = Adw.MessageDialog(
-                    transient_for=self,
-                    heading="Success",
-                    body=f"Service {service_name} has been started."
+    def sort_by_name(self, model, iter1, iter2, user_data):
+        """Sort services by name"""
+        name1 = model.get_value(iter1, 0)
+        name2 = model.get_value(iter2, 0)
+        return (name1 > name2) - (name1 < name2)
+
+    def sort_by_status(self, model, iter1, iter2, user_data):
+        """Sort services by status"""
+        status1 = model.get_value(iter1, 1)
+        status2 = model.get_value(iter2, 1)
+        return (status1 > status2) - (status1 < status2)
+
+    def sort_by_host(self, model, iter1, iter2, user_data):
+        """Sort services by host"""
+        host1 = model.get_value(iter1, 2)
+        host2 = model.get_value(iter2, 2)
+        return (host1 > host2) - (host1 < host2)
+
+    def format_status_output(self, text):
+        """Format systemctl status output with Pango markup"""
+        formatted_lines = []
+        for line in text.splitlines():
+            # Escape any existing markup
+            line = GLib.markup_escape_text(line)
+            
+            # Highlight service name and description
+            if "Loaded:" in line:
+                line = line.replace(
+                    "loaded",
+                    '<span foreground="#2ecc71">loaded</span>'  # Green
                 )
-                start_success.add_response("ok", "_OK")
-                start_success.present()
-                
-                # Refresh the parent window's service list
-                if isinstance(self.parent_window, SystemdManagerWindow):
-                    self.parent_window.refresh_data()
-                
-            except subprocess.CalledProcessError as e:
-                error_dialog = Adw.MessageDialog(
-                    transient_for=self,
-                    heading="Error",
-                    body=f"Failed to start service: {e}"
-                )
-                error_dialog.add_response("ok", "_OK")
-                error_dialog.present()
+            elif "Active:" in line:
+                if "active (running)" in line.lower():
+                    line = line.replace(
+                        "active",
+                        '<span foreground="#2ecc71">active</span>'  # Green
+                    )
+                elif "inactive" in line.lower():
+                    line = line.replace(
+                        "inactive",
+                        '<span foreground="#e74c3c">inactive</span>'  # Red
+                    )
+                elif "failed" in line.lower():
+                    line = line.replace(
+                        "failed",
+                        '<span foreground="#e74c3c">failed</span>'  # Red
+                    )
+            elif "Main PID:" in line:
+                line = f'<span foreground="#3498db">{line}</span>'  # Blue
+            elif "CGroup:" in line:
+                line = f'<span foreground="#f1c40f">{line}</span>'  # Yellow
+            
+            formatted_lines.append(line)
         
-        # Close the editor window
-        self.destroy()
+        return '<span font_family="monospace">' + '\n'.join(formatted_lines) + '</span>'
 
-class SystemdManagerApp(Adw.Application):
-    def __init__(self):
-        super().__init__(application_id="io.github.mfat.systemdpilot",
-                        flags=Gio.ApplicationFlags.FLAGS_NONE)
-        self.connect('activate', self.on_activate)
-        self.connect('shutdown', self.on_shutdown)
+    def on_disconnect_clicked(self, button):
+        """Handle disconnect button click"""
+        selection = self.hosts_list.get_selected_row()
+        if not selection:
+            self.show_error_dialog("Please select a host to disconnect")
+            return
         
-        self.set_accels_for_action("win.search", ["<Control>f"])
-        self.set_accels_for_action("app.new_service", ["<Control>n"])
-        self.set_accels_for_action("app.reload", ["<Control>r"])
-        self.set_accels_for_action("win.show_log", ["<Control>l"])
+        host_name = selection.get_children()[0].get_children()[1].get_text()
+        client = self.active_connections.get(host_name)
         
-        # Add reload action
-        reload_action = Gio.SimpleAction.new("reload", None)
-        reload_action.connect("activate", self.on_reload_action)
-        self.add_action(reload_action)
+        if not client:
+            self.show_error_dialog("Host is not connected")
+            return
         
-        # Add feedback action
-        feedback_action = Gio.SimpleAction.new("feedback", None)
-        feedback_action.connect("activate", self.on_feedback_action)
-        self.add_action(feedback_action)
+        try:
+            client.close()
+            del self.active_connections[host_name]
+            self.refresh_hosts_list()  # Update the host list to show disconnected state
+            self.remote_service_store.clear()  # Clear the services list
+            self.show_info_dialog(f"Disconnected from {host_name}")
+            
+        except Exception as e:
+            self.show_error_dialog(f"Failed to disconnect: {str(e)}")
+
+    def toggle_theme(self, button):
+        """Toggle between light and dark theme"""
+        self.is_dark_mode = not self.is_dark_mode
+        self.settings.set_property("gtk-application-prefer-dark-theme", self.is_dark_mode)
         
-        about_action = Gio.SimpleAction.new("about", None)
-        about_action.connect("activate", self.on_about_action)
-        self.add_action(about_action)
+        # Update CSS for custom widgets if needed
+        self.update_custom_theme()
 
-        # Add new service action
-        new_service_action = Gio.SimpleAction.new("new_service", None)
-        new_service_action.connect("activate", self.on_new_service_clicked)
-        self.add_action(new_service_action)
+    def update_custom_theme(self):
+        """Update custom widget themes based on current mode"""
+        # Common CSS for both themes - static black background for text views
+        css_data = b"""
+            .action-bar {
+                border-top: 1px solid alpha(#000000, 0.1);
+                padding: 6px;
+            }
+            
+            .action-button {
+                padding: 8px;
+                margin: 4px;
+                border-radius: 4px;
+                min-width: 80px;
+            }
+            
+            .action-button:hover {
+                background-color: alpha(#000000, 0.1);
+            }
+            
+            /* Always black background for text content */
+            .theme-text {
+                color: #ffffff;
+                background-color: #000000;
+                padding: 10px;
+                font-family: monospace;
+            }
+            
+            .theme-background {
+                background-color: #000000;
+                padding: 6px;
+            }
+            
+            textview {
+                color: #ffffff;
+                background-color: #000000;
+                font-family: monospace;
+            }
+            
+            textview text {
+                color: #ffffff;
+                background-color: #000000;
+            }
+            
+            scrolledwindow {
+                background-color: #000000;
+            }
+        """
+        
+        self.css_provider.load_from_data(css_data)
 
-    def on_activate(self, app):
-        win = SystemdManagerWindow(application=app)
-        win.present()
+    def show_about_dialog(self, button):
+        """Show the About dialog"""
+        about_dialog = Gtk.AboutDialog(transient_for=self)
+        about_dialog.set_modal(True)
+        
+        # Set dialog properties
+        about_dialog.set_program_name(APP_NAME)
+        about_dialog.set_version(APP_VERSION)
+        about_dialog.set_comments(APP_DESCRIPTION)
+        about_dialog.set_authors(APP_AUTHORS)
+        about_dialog.set_website(APP_WEBSITE)
+        about_dialog.set_website_label("Project website")
+        about_dialog.set_license_type(Gtk.License.GPL_3_0)
+        about_dialog.set_logo_icon_name(None)  # Try this instead
+        about_dialog.set_logo(None)
+        about_dialog.set_icon(None)
+        
+        about_dialog.connect("response", lambda d, r: d.destroy())
+        about_dialog.show()
 
-    def on_shutdown(self, app):
-        for window in self.get_windows():
-            window.close()
-
-    def on_about_action(self, action, param):
-        about = Adw.AboutWindow(
-            transient_for=self.get_active_window(),
-            application_name="systemd Pilot",
-            application_icon="system-run",
-            developer_name="mFat",
-            version=APP_VERSION,
-            website="https://github.com/mfat/systemd-pilot",
-            license_type=Gtk.License.GPL_3_0,
-            developers=["mFat"],
-            copyright="© 2024 mFat"
+    def create_dark_source_view(self, language_id=None):
+        """Create a dark themed source view with syntax highlighting"""
+        scrolled = Gtk.ScrolledWindow()
+        
+        # Set up source view with better editing features
+        source_buffer = GtkSource.Buffer()
+        if language_id:
+            source_buffer.set_language(
+                GtkSource.LanguageManager.get_default().get_language(language_id)
+            )
+        
+        # Use default style scheme for syntax highlighting
+        style_manager = GtkSource.StyleSchemeManager.get_default()
+        style_scheme = style_manager.get_scheme('classic')  # Use classic scheme for black on white
+        source_buffer.set_style_scheme(style_scheme)
+        
+        source_view = GtkSource.View.new_with_buffer(source_buffer)
+        source_view.set_show_line_numbers(True)
+        source_view.set_auto_indent(True)
+        source_view.set_indent_width(2)
+        source_view.set_insert_spaces_instead_of_tabs(True)
+        source_view.set_highlight_current_line(True)
+        source_view.set_monospace(True)
+        
+        # Force black on white colors
+        css_provider = Gtk.CssProvider()
+        css_provider.load_from_data(b"""
+            textview {
+                color: #000000;
+                background-color: #ffffff;
+            }
+            textview text {
+                color: #000000;
+                background-color: #ffffff;
+            }
+        """)
+        
+        source_view.get_style_context().add_provider(
+            css_provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
         )
-        about.present()
+        
+        scrolled.add(source_view)
+        return scrolled, source_view
 
-    def on_reload_action(self, action, param):
-        """Handle reload action from menu"""
-        active_window = self.get_active_window()
-        if active_window:
-            active_window.on_daemon_reload(None)
+    def toggle_show_inactive(self, button):
+        """Toggle showing inactive services"""
+        self.show_inactive = not self.show_inactive
+        # Update both local and remote service lists
+        self.refresh_local_services()
+        if self.stack.get_visible_child_name() == "remote":
+            selection = self.hosts_list.get_selected_row()
+            if selection:
+                host_name = selection.get_children()[0].get_children()[1].get_text()
+                if host_name in self.active_connections:
+                    self.refresh_services(host_name)
 
-    def on_feedback_action(self, action, param):
-        """Open feedback URL in default browser"""
-        Gtk.show_uri(
-            self.get_active_window(),
-            "https://github.com/mfat/systemd-pilot/issues",
-            Gdk.CURRENT_TIME
-        )
+def main():
+    win = SystemdManagerWindow()
+    win.connect("destroy", Gtk.main_quit)
+    win.show_all()
+    Gtk.main()
 
-    def on_new_service_clicked(self, action, param):
-        editor = ServiceEditor(self.get_active_window())
-        editor.present()
-
-app = SystemdManagerApp()
-app.run(None)
+if __name__ == "__main__":
+    main()
