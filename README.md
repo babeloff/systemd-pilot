@@ -28,13 +28,13 @@ Python modules:
 - PyYAML
 
 Debian packages:
-- `sudo apt install \
-    python3-gi \
-    python3-gi-cairo \
-    gir1.2-gtk-3.0 \
-    gir1.2-gtksource-4 \
-    python3-paramiko \
-    python3-yaml \
+- `sudo apt install 
+    python3-gi 
+    python3-gi-cairo 
+    gir1.2-gtk-3.0 
+    gir1.2-gtksource-4 
+    python3-paramiko 
+    python3-yaml 
     python3-keyring`
 
   
