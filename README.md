@@ -13,10 +13,8 @@ systemd Pilot is a desktop application for managing systemd services on GNU/linu
 - Lightweight and easy on system resources (just a single Python script)
   
 ## Download
-- Download from the [releases](https://github.com/mfat/systemd-pilot/releases) section the package for your distribution. Alternatively, you can download the flatpak or the executables  `systemd-pilot` or `systemd-pilot-legacy`(for older systems).
-
-- For older systems the Flatpak and the executable are recommended. 
-
+- Download from the [releases](https://github.com/mfat/systemd-pilot/releases) section the package for your distribution.
+  
 ## Requirements
 If you prefer to run the python script directly, here are the requirements:
 
