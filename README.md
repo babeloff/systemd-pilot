@@ -24,16 +24,10 @@ systemd Pilot is a desktop application for managing systemd services on GNU/linu
 ## Requirements
 
 Python modules:
-`PyGObject`
-
-In Debian/Ubuntu, you need these packages:
-`sudo apt install python3 libgtk-4-1 libadwaita-1-0 libgtksourceview-5-0 gnome-terminal gnome-logs python3-gi python3-gi-cairo gir1.2-gtk-4.0 gir1.2-adw-1 gir1.2-gtksource-5`
-
-For Fedora/RHEL/etc.
-`sudo dnf install python3 gtk4 libadwaita gtksourceview5 gnome-terminal gnome-logs`
-
-For Arch linux:
-`sudo pacman -S python gtk4 libadwaita gtksourceview5 gnome-terminal gnome-logs`
+- PyGObject>=3.42.0
+- paramiko>=3.0.0
+- keyring>=24.0.0
+- rich>=13.0.0 
 
 
 ## Support development
