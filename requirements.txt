@@ -1,0 +1,4 @@
+PyGObject>=3.42.0
+paramiko>=3.0.0
+keyring>=24.0.0
+rich>=13.0.0 
