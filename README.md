@@ -27,7 +27,7 @@ Python modules:
 - rich>=13.0.0
 - PyYAML
 
-Debian packages:
+Debian dependencies:
 - `sudo apt install 
     python3-gi 
     python3-gi-cairo 
@@ -36,7 +36,21 @@ Debian packages:
     python3-paramiko 
     python3-yaml 
     python3-keyring`
-
+  
+Fedora/RHEL dependencies:
+- `sudo dnf install python3
+      python3-gobject
+      python3-paramiko
+      python3-keyring
+      python3-rich
+      python3-cairo
+      python3-gobject
+      python3-dbus
+      python3-secretstorage
+      gtk4
+      libadwaita
+      gtksourceview4
+      systemd`
   
 
 
