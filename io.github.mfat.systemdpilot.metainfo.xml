@@ -19,9 +19,6 @@
       Quicly deploy and run a systemd service
     </p>
     <p>
-      Filter by running state
-    </p>
-    <p>
       Start, Stop, Restart services, show status
     </p>
     <p>
