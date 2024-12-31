@@ -5,6 +5,20 @@ systemd Pilot is a desktop application for managing systemd services on GNU/linu
 ![image](https://github.com/user-attachments/assets/85ee68be-aa3e-4291-8435-ef9ee7b8b72f)
 
 
+![Screenshot From 2024-12-31 11-26-27](https://github.com/user-attachments/assets/09a58f8c-7d2b-4bc3-87db-561221295b18)
+
+
+![Screenshot From 2024-12-31 11-28-58](https://github.com/user-attachments/assets/1c5653ab-31bc-4fd1-b607-1240dd85f831)
+
+
+![Screenshot From 2024-12-31 11-28-58](https://github.com/user-attachments/assets/5697c970-b11c-4fd6-a1ac-a70c5c62a250)
+
+
+![Screenshot From 2024-12-31 11-29-24](https://github.com/user-attachments/assets/b9eb7194-b3dc-4c17-8ecc-8946374a2ca1)
+
+![Screenshot From 2024-12-31 11-29-41](https://github.com/user-attachments/assets/2715e99c-2a96-406b-9d55-4f3512bbc345)
+
+
 ## Features
 - List system services
 - Quickly deploy a new service using a template
