@@ -1,6 +1,6 @@
 # systemd Pilot
 
-systemd Pilot is a desktop application for managing systemd services on GNU/linux systems. it can be described as a gui for systemd or systemctrl. 
+systemd Pilot is a desktop application for managing systemd services on GNU/linux systems. it can be described as a gui for systemctrl. 
 
 ![image](https://github.com/user-attachments/assets/85ee68be-aa3e-4291-8435-ef9ee7b8b72f)
 
