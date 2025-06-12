@@ -1,0 +1,9 @@
+[
+  {
+    "type": "cargo",
+    "url": "https://github.com/rust-lang/crates.io-index",
+    "commit": "HEAD",
+    "dest": "cargo/registry/index/github.com-1ecc6299db9ec823",
+    "dest-filename": "config.json"
+  }
+]

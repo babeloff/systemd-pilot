@@ -1,13 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
   <id>io.github.mfat.systemdpilot</id>
-  
+
   <name>systemd Pilot</name>
   <summary>systemd service manager </summary>
-  
+
   <metadata_license>MIT</metadata_license>
   <project_license>GPL-3.0-or-later</project_license>
-  
+
   <description>
     <p>
       systemd Pilot is a desktop application for managing systemd services on GNU/linux systems. Features:
@@ -16,7 +16,7 @@
       List system and user services
     </p>
     <p>
-      Quicly deploy and run a systemd service
+      Quickly deploy and run a systemd service
     </p>
     <p>
       Start, Stop, Restart services, show status
@@ -37,10 +37,10 @@
       Full integration into GNOME desktop (libadwaita)
     </p>
     <p>
-      
+
     </p>
   </description>
-  
+
   <launchable type="desktop-id">io.github.mfat.systemdpilot.desktop</launchable>
   <screenshots>
     <screenshot type="default">

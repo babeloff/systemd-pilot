@@ -1,0 +1,156 @@
+#!/bin/bash
+
+# Pre-push hook for systemd-pilot
+# This hook runs additional checks before pushing to remote repository
+
+set -e
+
+echo "🚀 Running pre-push checks..."
+
+# Check if we're pushing to main/master branch
+current_branch=$(git rev-parse --abbrev-ref HEAD)
+remote_branch="$2"
+
+if [[ "$current_branch" == "main" || "$current_branch" == "master" ]]; then
+    echo "🔒 Pushing to protected branch: $current_branch"
+    echo "📋 Running comprehensive checks..."
+fi
+
+# Check if cargo is available
+if ! command -v cargo &> /dev/null; then
+    echo "❌ Cargo is not installed or not in PATH"
+    exit 1
+fi
+
+# Ensure we're in a clean state
+if [[ -n $(git status --porcelain) ]]; then
+    echo "❌ Working directory is not clean. Please commit or stash changes."
+    exit 1
+fi
+
+# Run comprehensive tests
+echo "🧪 Running comprehensive test suite..."
+if ! cargo test --all-features --release; then
+    echo "❌ Release tests failed. Please fix them before pushing."
+    exit 1
+fi
+
+# Run clippy with strict settings
+echo "🔧 Running strict clippy checks..."
+if ! cargo clippy --all-targets --all-features --release -- -D warnings -D clippy::pedantic; then
+    echo "❌ Strict clippy checks failed. Please address the issues."
+    exit 1
+fi
+
+# Check documentation builds
+echo "📚 Checking documentation build..."
+if ! cargo doc --all-features --no-deps --quiet; then
+    echo "❌ Documentation build failed. Please fix doc comments."
+    exit 1
+fi
+
+# Run benchmarks if available
+if cargo bench --list &> /dev/null; then
+    echo "⚡ Running benchmarks..."
+    if ! cargo bench --no-run; then
+        echo "❌ Benchmark compilation failed."
+        exit 1
+    fi
+fi
+
+# Security audit
+if command -v cargo-audit &> /dev/null; then
+    echo "🔒 Running security audit..."
+    if ! cargo audit; then
+        echo "❌ Security vulnerabilities found. Please address them before pushing."
+        exit 1
+    fi
+else
+    echo "⚠️  cargo-audit not installed. Consider installing it for security checks."
+fi
+
+# Check for dependency licenses
+if command -v cargo-license &> /dev/null; then
+    echo "📜 Checking dependency licenses..."
+    if ! cargo license --json > /dev/null; then
+        echo "❌ License check failed."
+        exit 1
+    fi
+else
+    echo "⚠️  cargo-license not installed. Consider installing it for license checks."
+fi
+
+# Check binary size (warn if too large)
+echo "📦 Checking binary size..."
+if cargo build --release --quiet; then
+    binary_size=$(stat -c%s "target/release/systemd-pilot" 2>/dev/null || echo "0")
+    if [ "$binary_size" -gt 50000000 ]; then  # 50MB
+        echo "⚠️  Binary size is large ($(($binary_size / 1024 / 1024))MB). Consider optimizing."
+    fi
+fi
+
+# Check for FIXME/TODO in main branch
+if [[ "$current_branch" == "main" || "$current_branch" == "master" ]]; then
+    echo "📝 Checking for FIXME/TODO comments..."
+    todo_count=$(find src -name "*.rs" -exec grep -l "FIXME\|TODO" {} \; | wc -l)
+    if [ "$todo_count" -gt 0 ]; then
+        echo "⚠️  Found TODO/FIXME comments in $todo_count files."
+        echo "   Consider addressing them before pushing to main branch."
+        find src -name "*.rs" -exec grep -Hn "FIXME\|TODO" {} \;
+    fi
+fi
+
+# Check Cargo.lock is up to date
+echo "🔒 Checking Cargo.lock is up to date..."
+if ! cargo check --locked --quiet; then
+    echo "❌ Cargo.lock is not up to date. Run 'cargo update' and commit the changes."
+    exit 1
+fi
+
+# Check for unused dependencies
+if command -v cargo-udeps &> /dev/null; then
+    echo "🧹 Checking for unused dependencies..."
+    if ! cargo +nightly udeps --all-targets; then
+        echo "⚠️  Unused dependencies found. Consider removing them."
+        # Don't fail, just warn
+    fi
+fi
+
+# Performance regression check (if we have previous benchmarks)
+if [ -f "benches/results.txt" ]; then
+    echo "📊 Checking for performance regressions..."
+    # This would require a more sophisticated setup
+    echo "⚠️  Performance regression check not implemented yet."
+fi
+
+# Check commit message quality for recent commits
+echo "💬 Checking recent commit messages..."
+recent_commits=$(git log --oneline -10 --format="%s")
+while IFS= read -r commit_msg; do
+    if [[ ${#commit_msg} -lt 10 ]]; then
+        echo "⚠️  Short commit message found: '$commit_msg'"
+        echo "   Consider writing more descriptive commit messages."
+    fi
+done <<< "$recent_commits"
+
+# Check for binary files that shouldn't be committed
+echo "🔍 Checking for unwanted binary files..."
+unwanted_files=$(git ls-files | grep -E '\.(exe|dll|so|dylib|bin)$' | grep -v target/ || true)
+if [ -n "$unwanted_files" ]; then
+    echo "❌ Unwanted binary files found:"
+    echo "$unwanted_files"
+    echo "Consider adding them to .gitignore"
+    exit 1
+fi
+
+# Final check - ensure we can build the Flatpak (if flatpak-builder is available)
+if command -v flatpak-builder &> /dev/null && [ -f "flatpak/io.github.mfat.systemdpilot.yml" ]; then
+    echo "📦 Checking Flatpak manifest..."
+    if ! flatpak-builder --dry-run --disable-download /tmp/systemd-pilot-test flatpak/io.github.mfat.systemdpilot.yml; then
+        echo "❌ Flatpak manifest has issues. Please fix them."
+        exit 1
+    fi
+fi
+
+echo "✅ All pre-push checks passed! Ready to push to $remote_branch"
+exit 0

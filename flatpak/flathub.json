@@ -1,0 +1,74 @@
+{
+  "only-arches": ["x86_64", "aarch64"],
+  "skip-arches-for-flathub": [],
+  "disable-external-data-checker": false,
+  "automerge-flathubbot-prs": true,
+  "end-of-life": null,
+  "end-of-life-rebase": null,
+  "token-type": 1,
+  "build-log-url": null,
+  "exclude-sources": [],
+  "include": [],
+  "exclude": [],
+  "external-data-checker": true,
+  "publish-delay-hours": 0,
+  "skip-icons-check": false,
+  "skip-appstream-check": false,
+  "use-buildkit": false,
+  "build-runtime-repo": null,
+  "description": "A modern GTK application for managing systemd services locally and remotely, built with Rust for better performance and reliability.",
+  "tags": [
+    "system",
+    "administration",
+    "systemd",
+    "services",
+    "ssh",
+    "remote-management"
+  ],
+  "categories": ["System", "GTK"],
+  "keywords": [
+    "systemd",
+    "systemctl",
+    "services",
+    "daemon",
+    "ssh",
+    "remote",
+    "gui",
+    "gtk",
+    "rust"
+  ],
+  "developer": {
+    "name": "mFat",
+    "url": "https://github.com/mfat"
+  },
+  "homepage": "https://github.com/mfat/systemd-pilot",
+  "donation": {
+    "bitcoin": "bc1qqtsyf0ft85zshsnw25jgsxnqy45rfa867zqk4t",
+    "dogecoin": "DRzNb8DycFD65H6oHNLuzyTzY1S5avPHHx"
+  },
+  "runtime-repo-priority": 0,
+  "runtime-repo-url": null,
+  "default-branch": "stable",
+  "collection-id": null,
+  "appstream-gstreamer-version": null,
+  "build-options": {
+    "env": {
+      "CARGO_HOME": "/run/build/systemd-pilot/cargo",
+      "RUST_BACKTRACE": "1"
+    },
+    "append-path": "/usr/lib/sdk/rust-stable/bin"
+  },
+  "sdk-extensions": ["org.freedesktop.Sdk.Extension.rust-stable"],
+  "cleanup": [
+    "/include",
+    "/lib/pkgconfig",
+    "/man",
+    "/share/doc",
+    "/share/gtk-doc",
+    "/share/man",
+    "/share/pkgconfig",
+    "*.la",
+    "*.a"
+  ],
+  "cleanup-commands": ["rm -rf /app/lib/debug", "rm -rf /app/cargo"]
+}

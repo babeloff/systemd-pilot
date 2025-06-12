@@ -1,0 +1,86 @@
+#!/bin/bash
+
+# Pre-commit hook for systemd-pilot
+# This hook runs code quality checks before allowing commits
+
+set -e
+
+echo "🔍 Running pre-commit checks..."
+
+# Check if cargo is available
+if ! command -v cargo &> /dev/null; then
+    echo "❌ Cargo is not installed or not in PATH"
+    exit 1
+fi
+
+# Format check
+echo "📐 Checking code formatting..."
+if ! cargo fmt --all -- --check; then
+    echo "❌ Code formatting issues found. Run 'cargo fmt' to fix them."
+    exit 1
+fi
+
+# Clippy linting
+echo "🔧 Running clippy lints..."
+if ! cargo clippy --all-targets --all-features -- -D warnings; then
+    echo "❌ Clippy found issues. Please fix them before committing."
+    exit 1
+fi
+
+# Run tests
+echo "🧪 Running tests..."
+if ! cargo test --all-features; then
+    echo "❌ Tests failed. Please fix them before committing."
+    exit 1
+fi
+
+# Check for TODO/FIXME comments in staged files
+echo "📝 Checking for TODO/FIXME comments..."
+staged_files=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.(rs|toml|md)$' || true)
+if [ -n "$staged_files" ]; then
+    todo_count=$(git diff --cached | grep -E '^(\+.*)(TODO|FIXME|XXX|HACK)' | wc -l || true)
+    if [ "$todo_count" -gt 0 ]; then
+        echo "⚠️  Found $todo_count TODO/FIXME comments in staged changes."
+        echo "   Consider addressing them before committing."
+        # Don't fail, just warn
+    fi
+fi
+
+# Check Cargo.toml for version consistency
+echo "📦 Checking Cargo.toml consistency..."
+if ! cargo check --quiet; then
+    echo "❌ Cargo check failed. Please fix compilation issues."
+    exit 1
+fi
+
+# Security audit (if cargo-audit is installed)
+if command -v cargo-audit &> /dev/null; then
+    echo "🔒 Running security audit..."
+    if ! cargo audit; then
+        echo "⚠️  Security vulnerabilities found. Consider updating dependencies."
+        # Don't fail, just warn for now
+    fi
+fi
+
+# Check for large files
+echo "📏 Checking for large files..."
+large_files=$(git diff --cached --name-only | xargs -I {} sh -c 'if [ -f "{}" ] && [ $(stat -c%s "{}") -gt 1048576 ]; then echo "{}"; fi' || true)
+if [ -n "$large_files" ]; then
+    echo "❌ Large files detected (>1MB):"
+    echo "$large_files"
+    echo "Consider using Git LFS for large files."
+    exit 1
+fi
+
+# Check for secrets/credentials
+echo "🔐 Checking for potential secrets..."
+secret_patterns="(password|secret|key|token|api_key|private_key|credential)"
+if git diff --cached | grep -iE "$secret_patterns" | grep -v "test" | grep -v "example" | grep -q .; then
+    echo "❌ Potential secrets found in staged changes!"
+    echo "Please review and remove any sensitive information."
+    git diff --cached | grep -iE "$secret_patterns" | grep -v "test" | grep -v "example"
+    exit 1
+fi
+
+echo "✅ All pre-commit checks passed!"
+exit 0

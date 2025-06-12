@@ -1,0 +1,400 @@
+# Pixi configuration for systemd-pilot
+#
+# This file manages ALL dependencies including Rust itself - no rustup required!
+#
+# Quick start:
+#   pixi run pixi-init    # One-time setup (installs Rust + tools)
+#   pixi run dev-setup    # Setup development environment
+#   pixi run -e dev build # Build with development tools
+#
+# Environments:
+#   default     - Base dependencies (rust, cargo, gtk)
+#   dev         - Development tools (rust-analyzer, rustfmt, clippy, cargo-watch)
+#   test        - Testing tools + dev tools (cargo-nextest)
+#   release     - Release tools + optimizations (strip)
+#
+# Features:
+#   base           - Core GTK/Rust dependencies + compiler toolchain
+#   dev-tools      - Development utilities (formatters, linters, watchers)
+#   test-tools     - Testing frameworks (nextest)
+#   release-tools  - Release utilities (strip, optimizations)
+
+[workspace]
+name = "systemd-pilot"
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+
+
+[environments]
+default = { features = ["base"] }
+dev = { features = ["base", "dev-tools"] }
+test = { features = ["base", "dev-tools", "test-tools"] }
+release = { features = ["base", "release-tools"] }
+
+[feature.base.dependencies]
+rust = ">=1.70"
+pkg-config = "*"
+gtk4 = "*"
+glib = "*"
+cairo = "*"
+pango = "*"
+gdk-pixbuf = "*"
+
+[feature.base.system-requirements]
+linux = "5.4"
+
+[feature.dev-tools.dependencies]
+# Additional Rust tools will be installed via cargo
+
+[feature.test-tools.dependencies]
+# Test tools will be installed via cargo
+
+[feature.release-tools.dependencies]
+# Release tools will be installed via cargo
+
+
+[feature.base.activation]
+env = { PKG_CONFIG_PATH = "$CONDA_PREFIX/lib/pkgconfig:$CONDA_PREFIX/share/pkgconfig:/usr/lib/pkgconfig:/usr/share/pkgconfig", PKG_CONFIG_ALLOW_SYSTEM_CFLAGS = "1" }
+
+[feature.dev-tools.activation]
+env = { RUST_LOG = "debug", RUST_BACKTRACE = "1", GTK_DEBUG = "interactive", PKG_CONFIG_PATH = "$CONDA_PREFIX/lib/pkgconfig:$CONDA_PREFIX/share/pkgconfig:/usr/lib/pkgconfig:/usr/share/pkgconfig", PKG_CONFIG_ALLOW_SYSTEM_CFLAGS = "1" }
+
+[feature.test-tools.activation]
+env = { RUST_LOG = "trace", RUST_TEST_THREADS = "1", PKG_CONFIG_PATH = "$CONDA_PREFIX/lib/pkgconfig:$CONDA_PREFIX/share/pkgconfig:/usr/lib/pkgconfig:/usr/share/pkgconfig", PKG_CONFIG_ALLOW_SYSTEM_CFLAGS = "1" }
+
+[feature.release-tools.activation]
+env = { RUST_LOG = "warn", PKG_CONFIG_PATH = "$CONDA_PREFIX/lib/pkgconfig:$CONDA_PREFIX/share/pkgconfig:/usr/lib/pkgconfig:/usr/share/pkgconfig", PKG_CONFIG_ALLOW_SYSTEM_CFLAGS = "1" }
+
+# Basic cargo commands - available in all environments
+[tasks.build]
+cmd = ["cargo", "build"]
+
+[tasks.build-release]
+cmd = ["cargo", "build", "--release"]
+
+[tasks.run]
+cmd = ["cargo", "run"]
+
+[tasks.run-release]
+cmd = ["cargo", "run", "--release"]
+
+[tasks.test]
+cmd = ["cargo", "test"]
+
+[tasks.check]
+cmd = ["cargo", "check"]
+
+[tasks.clippy]
+cmd = ["cargo", "clippy"]
+
+[tasks.fmt]
+cmd = ["cargo", "fmt"]
+
+[tasks.clean]
+cmd = ["cargo", "clean"]
+
+# Development tasks
+[tasks.dev]
+cmd = ["cargo", "run"]
+
+[tasks.watch]
+cmd = ["cargo", "watch", "-x", "run"]
+
+[tasks.watch-test]
+cmd = ["cargo", "watch", "-x", "test"]
+
+# Quality assurance tasks
+[tasks.lint]
+cmd = ["cargo", "clippy", "--", "-D", "warnings"]
+
+[tasks.format]
+cmd = ["cargo", "fmt", "--all"]
+
+[tasks.format-check]
+cmd = ["cargo", "fmt", "--all", "--", "--check"]
+
+[tasks.test-all]
+cmd = ["cargo", "test", "--all-features"]
+
+[tasks.audit]
+cmd = ["cargo", "audit"]
+
+# Documentation tasks
+[tasks.doc]
+cmd = ["cargo", "doc"]
+
+[tasks.doc-open]
+cmd = ["cargo", "doc", "--open"]
+
+# Installation tasks
+[tasks.install]
+cmd = ["cargo", "install", "--path", "."]
+
+[tasks.install-deps]
+cmd = [
+    "echo",
+    "Dependencies are managed by pixi system-requirements. Run 'pixi install' to ensure all dependencies are available.",
+]
+description = "Dependencies are managed by pixi system-requirements"
+
+# Flatpak development tasks
+[tasks.flatpak-build]
+cmd = ["flatpak-builder", "build", "flatpak/io.github.mfat.systemdpilot.yml"]
+cwd = "."
+
+[tasks.flatpak-run]
+cmd = [
+    "flatpak-builder",
+    "--run",
+    "build",
+    "flatpak/io.github.mfat.systemdpilot.yml",
+    "systemd-pilot",
+]
+cwd = "."
+
+[tasks.flatpak-clean]
+cmd = ["rm", "-rf", "build", ".flatpak-builder"]
+description = "Clean Flatpak build artifacts"
+
+[tasks.flatpak-check]
+cmd = [
+    "flatpak-builder",
+    "--dry-run",
+    "--disable-download",
+    "build",
+    "flatpak/io.github.mfat.systemdpilot.yml",
+]
+description = "Check Flatpak manifest without building"
+
+[tasks.flatpak-install]
+cmd = [
+    "flatpak-builder",
+    "--user",
+    "--install",
+    "--force-clean",
+    "build",
+    "flatpak/io.github.mfat.systemdpilot.yml",
+]
+description = "Build and install Flatpak locally"
+
+[tasks.flatpak-repo]
+cmd = [
+    "flatpak-builder",
+    "--repo=repo",
+    "--force-clean",
+    "build",
+    "flatpak/io.github.mfat.systemdpilot.yml",
+]
+description = "Build Flatpak and create local repository"
+
+[tasks.flatpak-bundle]
+cmd = [
+    "sh",
+    "-c",
+    "flatpak build-bundle repo systemd-pilot.flatpak io.github.mfat.systemdpilot stable",
+]
+depends-on = ["flatpak-repo"]
+description = "Create Flatpak bundle"
+
+[tasks.flatpak-lint]
+cmd = ["flatpak-builder-lint", "flatpak/io.github.mfat.systemdpilot.yml"]
+description = "Lint Flatpak manifest"
+
+[tasks.flatpak-generate-sources]
+cmd = [
+    "sh",
+    "-c",
+    "cd flatpak && cargo-vendor-filterer --platform=x86_64-unknown-linux-gnu --format=flatpak-builder > generated-sources.json",
+]
+description = "Generate Cargo dependency sources for Flatpak"
+
+# Release tasks
+[tasks.release-check]
+cmd = ["cargo", "check", "--release", "--all-features"]
+
+[tasks.release-test]
+cmd = ["cargo", "test", "--release", "--all-features"]
+
+[tasks.release-build]
+cmd = ["cargo", "build", "--release", "--all-features"]
+
+# Benchmarking tasks
+[tasks.bench]
+cmd = ["cargo", "bench"]
+
+[tasks.bench-all]
+cmd = ["cargo", "bench", "--all-features"]
+
+# Profile tasks
+[tasks.profile-dev]
+cmd = ["cargo", "build", "--profile", "dev"]
+
+[tasks.profile-release]
+cmd = ["cargo", "build", "--profile", "release"]
+
+# Security tasks
+[tasks.security-audit]
+cmd = ["cargo", "audit"]
+
+[tasks.security-deny]
+cmd = ["cargo", "deny", "check"]
+
+# Cross-compilation tasks
+[tasks.cross-build]
+cmd = ["cross", "build", "--target", "x86_64-unknown-linux-gnu"]
+
+[tasks.cross-build-arm]
+cmd = ["cross", "build", "--target", "aarch64-unknown-linux-gnu"]
+
+# Git hooks setup
+[tasks.setup-hooks]
+cmd = ["sh", "-c", "cp .githooks/* .git/hooks/ && chmod +x .git/hooks/*"]
+
+# CI/CD simulation tasks
+[tasks.ci-check]
+cmd = [
+    "sh",
+    "-c",
+    "cargo fmt --check && cargo clippy -- -D warnings && cargo test --all-features",
+]
+
+[tasks.ci-build]
+cmd = ["cargo", "build", "--release", "--all-features"]
+
+# Utility tasks
+[tasks.version]
+cmd = ["sh", "-c", "cargo --version && rustc --version"]
+
+[tasks.tree]
+cmd = ["cargo", "tree"]
+
+[tasks.outdated]
+cmd = ["cargo", "outdated"]
+
+[tasks.licenses]
+cmd = ["cargo", "license"]
+
+[tasks.deps-graph]
+cmd = ["sh", "-c", "cargo deps | dot -Tpng > deps.png"]
+
+# Development environment setup
+[tasks.setup-dev]
+cmd = [
+    "sh",
+    "-c",
+    "cargo install cargo-watch cargo-audit cargo-outdated cargo-license cargo-nextest",
+]
+description = "Install additional Rust development tools via cargo (rustfmt and clippy included with Rust)"
+env = { RUST_LOG = "debug" }
+
+[tasks.check-system-deps]
+cmd = [
+    "sh",
+    "-c",
+    "echo 'Checking system dependencies...' && pkg-config --exists gtk4 glib-2.0 cairo pango && echo 'All system dependencies found!' || echo 'Missing system dependencies. Run: pixi install'",
+]
+description = "Check if system dependencies are available"
+
+[tasks.setup-env]
+cmd = ["mkdir", "-p", ".env", "logs", "cache", "target"]
+description = "Create project directories"
+
+# Quick development workflow
+[tasks.quick-check]
+cmd = ["sh", "-c", "cargo check && cargo clippy"]
+env = { RUST_LOG = "info" }
+
+[tasks.quick-test]
+cmd = ["cargo", "test", "--lib"]
+env = { RUST_LOG = "debug" }
+
+[tasks.quick-run]
+cmd = ["cargo", "run"]
+env = { RUST_LOG = "info", GTK_DEBUG = "interactive" }
+
+# Environment-specific tasks
+[tasks.dev-run]
+cmd = ["cargo", "run"]
+env = { RUST_LOG = "debug", GTK_DEBUG = "interactive", RUST_BACKTRACE = "1" }
+
+[tasks.test-run]
+cmd = ["cargo", "test", "--all-features"]
+env = { RUST_LOG = "trace", RUST_TEST_THREADS = "1" }
+
+[tasks.release-run]
+cmd = ["cargo", "run", "--release"]
+env = { RUST_LOG = "warn" }
+
+# Pixi environment management tasks
+[tasks.env-info]
+cmd = ["pixi", "info"]
+description = "Show current environment information"
+
+[tasks.env-list]
+cmd = ["pixi", "list"]
+description = "List all available environments"
+
+[tasks.env-validate]
+cmd = [
+    "sh",
+    "-c",
+    "echo 'Validating pixi environments...' && pixi run -e dev version && pixi run -e test version && pixi run -e release version && echo 'All environments validated successfully'",
+]
+description = "Validate all pixi environments can be activated"
+
+[tasks.pixi-init]
+cmd = [
+    "sh",
+    "-c",
+    "echo 'Initializing project with pixi...' && pixi install && pixi run setup-env && pixi run check-system-deps && echo 'Project initialized! Run pixi run setup-dev to install additional tools'",
+]
+description = "Initialize project using pixi (includes system requirements and Rust toolchain)"
+
+[tasks.dev-setup]
+cmd = [
+    "sh",
+    "-c",
+    "echo 'Setting up development environment...' && pixi install -e dev && echo 'Development environment ready!'",
+]
+description = "Setup development environment with pixi"
+
+[tasks.pixi-verify]
+cmd = [
+    "sh",
+    "-c",
+    "echo 'Verifying pixi setup...' && which cargo | grep -q pixi && echo '✓ Cargo provided by pixi' && which rustc | grep -q pixi && echo '✓ Rustc provided by pixi' && cargo --version && rustc --version && echo '✓ Base Rust toolchain managed by pixi'",
+]
+description = "Verify that base Rust tools are provided by pixi"
+
+[tasks.help]
+cmd = [
+    "sh",
+    "-c",
+    "echo 'systemd-pilot pixi tasks:' && echo '' && echo 'Setup (first time):' && echo '  pixi install            - Install all dependencies (including system requirements)' && echo '  pixi run pixi-init      - Initialize project (Rust via pixi)' && echo '  pixi run setup-dev      - Install additional dev tools' && echo '  pixi run check-system-deps - Verify system dependencies' && echo '' && echo 'Environments:' && echo '  default - Base dependencies (rust, gtk4, build tools + system requirements)' && echo '  dev     - Development environment' && echo '  test    - Testing environment' && echo '  release - Release builds with optimizations' && echo '' && echo 'Common tasks:' && echo '  build, run, test, clean, check' && echo '  dev-run, test-run, release-run' && echo '  flatpak-build, flatpak-run' && echo '  desktop-validate, desktop-install' && echo '' && echo 'System dependencies managed via pixi system-requirements (GTK4, GLib, Cairo, etc.)' && echo 'Data files in data/ directory (desktop integration, icons, metadata)' && echo '' && echo 'Use: pixi run -e <env> <task>' && echo 'Example: pixi run -e dev build'",
+]
+description = "Show help information about available tasks and environments"
+
+# Desktop integration tasks
+[tasks.desktop-validate]
+cmd = [
+    "sh",
+    "-c",
+    "appstream-util validate-relax data/io.github.mfat.systemdpilot.metainfo.xml && desktop-file-validate data/io.github.mfat.systemdpilot.desktop",
+]
+description = "Validate AppStream metadata and desktop file"
+
+[tasks.desktop-install]
+cmd = [
+    "sh",
+    "-c",
+    "sudo cp data/io.github.mfat.systemdpilot.desktop /usr/share/applications/ && sudo cp data/io.github.mfat.systemdpilot.metainfo.xml /usr/share/metainfo/ && sudo cp data/io.github.mfat.systemdpilot.svg /usr/share/icons/hicolor/scalable/apps/ && sudo gtk-update-icon-cache /usr/share/icons/hicolor/ && sudo update-desktop-database /usr/share/applications/",
+]
+description = "Install desktop integration files locally"
+
+[tasks.desktop-uninstall]
+cmd = [
+    "sh",
+    "-c",
+    "sudo rm -f /usr/share/applications/io.github.mfat.systemdpilot.desktop /usr/share/metainfo/io.github.mfat.systemdpilot.metainfo.xml /usr/share/icons/hicolor/scalable/apps/io.github.mfat.systemdpilot.svg && sudo gtk-update-icon-cache /usr/share/icons/hicolor/ && sudo update-desktop-database /usr/share/applications/",
+]
+description = "Remove desktop integration files"

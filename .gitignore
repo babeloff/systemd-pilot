@@ -1,0 +1,174 @@
+# Rust generated files
+/target/
+**/*.rs.bk
+*.pdb
+
+# Cargo
+# Note: Keep Cargo.lock for applications, ignore for libraries
+# Cargo.lock
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Pixi environment
+.pixi/
+pixi.lock
+
+# Python bytecode (if any Python scripts)
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Flatpak build artifacts
+.flatpak-builder/
+build-dir/
+repo/
+*.flatpak
+
+# GTK/GLib generated files
+*.gschema.compiled
+*.ui~
+
+# Logs
+*.log
+logs/
+
+# Runtime files
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage directory used by tools like istanbul
+coverage/
+*.lcov
+
+# Documentation build
+docs/_build/
+site/
+
+# Cache directories
+cache/
+.cache/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp
+
+# Dependencies visualization
+deps.png
+
+# Git hooks backup
+.githooks.bak
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Lock files from other package managers
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# Core dumps
+core.*
+
+# Profiling data
+*.prof
+
+# Test results
+test-results/
+junit.xml
+
+# Benchmark results
+criterion/
+benches/target/
+
+# Generated source lists for Flatpak
+flatpak/generated-sources.json.bak
+
+# Desktop integration test files
+*.desktop.test
+*.metainfo.xml.test
+
+# Project-specific generated files
+systemd-pilot.png.bak
+screenshots/*.bak
+
+# Rope project (Python IDE artifacts if any remain)
+.ropeproject/
+
+# SSH keys and sensitive config (if any test files)
+*.pem
+*.key
+test_id_rsa*
+
+# Service manager test files
+test_services/
+*.service.test
+
+# SystemD test units
+test-units/
+*.test.service
+
+# GTK4 specific generated files
+*.ui.h
+*.gresource
+*.gresource.xml.bak
+gschemas.compiled
+*.typelib
+
+# GObject introspection files
+*.gir
+*.typelib
+
+# GTK4 CSS compiled files
+*.css.compiled
+
+# D-Bus generated files
+*-generated.c
+*-generated.h
+
+# SystemD specific
+*.journal
+systemd-pilot.service.test
+*.socket.test
+*.timer.test
+
+# SSH connection test artifacts
+known_hosts.test
+ssh_config.test
+
+# Application cache
+~/.cache/systemd-pilot/
+.local/share/systemd-pilot/
+
+# Runtime directories that might be created during testing
+run/
+var/

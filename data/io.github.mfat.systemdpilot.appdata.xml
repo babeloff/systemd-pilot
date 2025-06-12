@@ -5,22 +5,29 @@
   <project_license>GPL-3.0-or-later</project_license>
   <name>systemd Pilot</name>
   <summary>A graphical tool for managing systemd services</summary>
-  
+
   <description>
     <p>
-      systemd Pilot is a graphical tool that allows you to manage systemd services both locally and remotely. Features include:
+      systemd Pilot is a modern graphical tool built with Rust and GTK that allows you to manage systemd services both locally and remotely. This rewrite provides better performance, memory safety, and enhanced user experience.
     </p>
+    <p>Features include:</p>
     <ul>
-      <li>Start, stop, restart, enable and disable services</li>
-      <li>View service logs and details</li>
-      <li>Remote service management via SSH</li>
-      <li>Create new systemd services</li>
-      <li>Dark/light theme support</li>
+      <li>Start, stop, restart, enable and disable services with real-time status updates</li>
+      <li>View service logs with syntax highlighting and filtering</li>
+      <li>Remote service management via SSH with secure credential storage</li>
+      <li>Create and edit systemd service files with templates</li>
+      <li>Automatic dark/light theme detection with manual toggle</li>
+      <li>Advanced search and filtering capabilities</li>
+      <li>Multi-host management with connection status indicators</li>
+      <li>Asynchronous operations for responsive UI</li>
     </ul>
+    <p>
+      Built with Rust for superior performance and reliability, systemd Pilot is the modern way to manage your system services.
+    </p>
   </description>
-  
+
   <launchable type="desktop-id">io.github.mfat.systemdpilot.desktop</launchable>
-  
+
   <screenshots>
     <screenshot type="default">
       <caption>Main window showing service list</caption>
@@ -29,7 +36,7 @@
   </screenshots>
 
   <url type="homepage">https://github.com/mfat/systemd-pilot</url>
-  
+
   <provides>
     <binary>systemd-pilot</binary>
   </provides>
@@ -37,7 +44,16 @@
   <releases>
     <release version="3.0.0" date="2024-03-14">
       <description>
-        <p>Initial Flatpak release</p>
+        <p>Major rewrite in Rust with GTK</p>
+        <ul>
+          <li>Complete rewrite from Python to Rust for better performance and memory safety</li>
+          <li>Modern GTK interface with improved responsiveness</li>
+          <li>Enhanced remote host management with better SSH handling</li>
+          <li>Improved theme support with automatic system theme detection</li>
+          <li>Better error handling and user feedback</li>
+          <li>Asynchronous operations for non-blocking UI</li>
+          <li>Enhanced security with proper credential management</li>
+        </ul>
       </description>
     </release>
   </releases>

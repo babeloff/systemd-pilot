@@ -1,0 +1,122 @@
+# Application Data and Desktop Integration Files
+
+This directory contains application data files, desktop environment integration files, and application metadata.
+
+## Files Overview
+
+- **`io.github.mfat.systemdpilot.desktop`** - Desktop entry file for application launchers
+- **`io.github.mfat.systemdpilot.appdata.xml`** - Legacy AppData metadata (deprecated)
+- **`io.github.mfat.systemdpilot.metainfo.xml`** - AppStream metadata file
+- **`io.github.mfat.systemdpilot.svg`** - Application icon in SVG format
+
+## Desktop Entry File
+
+The `desktop` file defines how the application appears in desktop environments:
+
+- Application name, description, and categories
+- Executable command and icon reference
+- MIME type associations
+- Keywords for search functionality
+
+This file is used by:
+- Application launchers (GNOME Shell, KDE Plasma, etc.)
+- Desktop environments for menu entries
+- File managers for default application associations
+
+## AppStream Metadata
+
+The `metainfo.xml` file provides application information for software centers and package managers:
+
+- Application name, description, and summary
+- Screenshots and feature lists
+- Release notes and version history
+- Developer information and links
+- Content ratings and categories
+
+This file is used by:
+- GNOME Software
+- KDE Discover
+- Flatpak repositories
+- Package managers like `apt` and `dnf`
+
+### Validation
+
+To validate the AppStream metadata:
+
+```bash
+# Install validation tools
+sudo apt install appstream-util desktop-file-utils
+
+# Validate the metadata file
+appstream-util validate-relax data/io.github.mfat.systemdpilot.metainfo.xml
+
+# Validate the desktop file
+desktop-file-validate data/io.github.mfat.systemdpilot.desktop
+```
+
+## Application Icon
+
+The SVG icon is used across different contexts:
+
+- **Application launchers** - Menu entries and desktop shortcuts
+- **Window decorations** - Titlebar and taskbar
+- **Software centers** - Application listings
+- **Flatpak packaging** - Bundle metadata
+
+### Icon Guidelines
+
+The icon follows these specifications:
+- **Format**: SVG (Scalable Vector Graphics)
+- **Size**: Scalable, optimized for 48x48px base size
+- **Style**: Follows system icon themes
+- **Colors**: Uses semantic colors that adapt to themes
+
+## Installation
+
+During application installation, these files are copied to system directories:
+
+```bash
+# Desktop entry
+/usr/share/applications/io.github.mfat.systemdpilot.desktop
+
+# AppStream metadata
+/usr/share/metainfo/io.github.mfat.systemdpilot.metainfo.xml
+
+# Application icon
+/usr/share/icons/hicolor/scalable/apps/io.github.mfat.systemdpilot.svg
+```
+
+## Development
+
+When modifying these files:
+
+1. **Metadata changes**: Update version numbers, descriptions, or release notes
+2. **Icon updates**: Maintain SVG compatibility and scalability
+3. **Validation**: Always validate changes before committing
+
+### Testing Desktop Integration
+
+```bash
+# Install files locally for testing
+sudo cp data/io.github.mfat.systemdpilot.desktop /usr/share/applications/
+sudo cp data/io.github.mfat.systemdpilot.metainfo.xml /usr/share/metainfo/
+sudo cp data/io.github.mfat.systemdpilot.svg /usr/share/icons/hicolor/scalable/apps/
+
+# Update caches
+sudo gtk-update-icon-cache /usr/share/icons/hicolor/
+sudo update-desktop-database /usr/share/applications/
+sudo appstreamcli refresh-cache
+```
+
+## Standards Compliance
+
+These files comply with:
+- [AppStream Specification](https://www.freedesktop.org/software/appstream/docs/)
+- [FreeDesktop Icon Theme Specification](https://specifications.freedesktop.org/icon-theme-spec/latest/)
+- [XDG Desktop Entry Specification](https://specifications.freedesktop.org/desktop-entry-spec/latest/)
+
+## Resources
+
+- [AppStream Documentation](https://www.freedesktop.org/software/appstream/docs/)
+- [Icon Design Guidelines](https://developer.gnome.org/hig/guidelines/app-icons.html)
+- [Flatpak Desktop Integration](https://docs.flatpak.org/en/latest/desktop-integration.html)
