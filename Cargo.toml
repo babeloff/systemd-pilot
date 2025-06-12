@@ -11,7 +11,6 @@ keywords = ["systemd", "gui", "gtk", "service-manager", "ssh"]
 categories = ["command-line-utilities", "gui"]
 
 [dependencies]
-gtk4 = { version = "0.9", package = "gtk4" }
 glib = "0.20"
 gdk4 = { version = "0.9", package = "gdk4" }
 gio = "0.20"

@@ -31,8 +31,15 @@ dev = { features = ["base", "dev-tools"] }
 test = { features = ["base", "dev-tools", "test-tools"] }
 release = { features = ["base", "release-tools"] }
 
-[feature.base.dependencies]
+# [feature.base.dependencies]
+[dependencies]
 rust = ">=1.70"
+expat = "*"
+xorg-xproto = "*"
+xorg-kbproto = "*"
+xorg-xextproto = "*"
+xorg-renderproto = "*"
+liblzma-devel = "*"
 pkg-config = "*"
 gtk4 = "*"
 glib = "*"
@@ -72,10 +79,10 @@ cmd = ["cargo", "build"]
 [tasks.build-release]
 cmd = ["cargo", "build", "--release"]
 
-[tasks.run]
+[tasks.start]
 cmd = ["cargo", "run"]
 
-[tasks.run-release]
+[tasks.start-release]
 cmd = ["cargo", "run", "--release"]
 
 [tasks.test]
@@ -142,7 +149,7 @@ description = "Dependencies are managed by pixi system-requirements"
 cmd = ["flatpak-builder", "build", "flatpak/io.github.mfat.systemdpilot.yml"]
 cwd = "."
 
-[tasks.flatpak-run]
+[tasks.flatpak-start]
 cmd = [
     "flatpak-builder",
     "--run",
@@ -308,20 +315,20 @@ env = { RUST_LOG = "info" }
 cmd = ["cargo", "test", "--lib"]
 env = { RUST_LOG = "debug" }
 
-[tasks.quick-run]
+[tasks.quick-start]
 cmd = ["cargo", "run"]
 env = { RUST_LOG = "info", GTK_DEBUG = "interactive" }
 
 # Environment-specific tasks
-[tasks.dev-run]
+[tasks.dev-start]
 cmd = ["cargo", "run"]
 env = { RUST_LOG = "debug", GTK_DEBUG = "interactive", RUST_BACKTRACE = "1" }
 
-[tasks.test-run]
+[tasks.test-start]
 cmd = ["cargo", "test", "--all-features"]
 env = { RUST_LOG = "trace", RUST_TEST_THREADS = "1" }
 
-[tasks.release-run]
+[tasks.release-start]
 cmd = ["cargo", "run", "--release"]
 env = { RUST_LOG = "warn" }
 
@@ -370,7 +377,7 @@ description = "Verify that base Rust tools are provided by pixi"
 cmd = [
     "sh",
     "-c",
-    "echo 'systemd-pilot pixi tasks:' && echo '' && echo 'Setup (first time):' && echo '  pixi install            - Install all dependencies (including system requirements)' && echo '  pixi run pixi-init      - Initialize project (Rust via pixi)' && echo '  pixi run setup-dev      - Install additional dev tools' && echo '  pixi run check-system-deps - Verify system dependencies' && echo '' && echo 'Environments:' && echo '  default - Base dependencies (rust, gtk4, build tools + system requirements)' && echo '  dev     - Development environment' && echo '  test    - Testing environment' && echo '  release - Release builds with optimizations' && echo '' && echo 'Common tasks:' && echo '  build, run, test, clean, check' && echo '  dev-run, test-run, release-run' && echo '  flatpak-build, flatpak-run' && echo '  desktop-validate, desktop-install' && echo '' && echo 'System dependencies managed via pixi system-requirements (GTK4, GLib, Cairo, etc.)' && echo 'Data files in data/ directory (desktop integration, icons, metadata)' && echo '' && echo 'Use: pixi run -e <env> <task>' && echo 'Example: pixi run -e dev build'",
+    "echo 'systemd-pilot pixi tasks:' && echo '' && echo 'Setup (first time):' && echo '  pixi install            - Install all dependencies (including system requirements)' && echo '  pixi run pixi-init      - Initialize project (Rust via pixi)' && echo '  pixi run setup-dev      - Install additional dev tools' && echo '  pixi run check-system-deps - Verify system dependencies' && echo '' && echo 'Environments:' && echo '  default - Base dependencies (rust, gtk4, build tools + system requirements)' && echo '  dev     - Development environment' && echo '  test    - Testing environment' && echo '  release - Release builds with optimizations' && echo '' && echo 'Common tasks:' && echo '  build, start, test, clean, check' && echo '  dev-start, test-start, release-start' && echo '  flatpak-build, flatpak-start' && echo '  desktop-validate, desktop-install' && echo '' && echo 'System dependencies managed via pixi system-requirements (GTK4, GLib, Cairo, etc.)' && echo 'Data files in data/ directory (desktop integration, icons, metadata)' && echo '' && echo 'Use: pixi run -e <env> <task>' && echo 'Example: pixi run -e dev build'",
 ]
 description = "Show help information about available tasks and environments"
 
