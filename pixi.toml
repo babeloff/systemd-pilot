@@ -9,7 +9,7 @@
 #
 # Environments:
 #   default     - Base dependencies (rust, cargo, gtk)
-#   dev         - Development tools (rust-analyzer, rustfmt, clippy, cargo-watch)
+#   dev         - Development tools (rust-analyzer, rustfmt, clippy, cargo-bacon)
 #   test        - Testing tools + dev tools (cargo-nextest)
 #   release     - Release tools + optimizations (strip)
 #
@@ -105,10 +105,10 @@ cmd = ["cargo", "clean"]
 cmd = ["cargo", "run"]
 
 [tasks.watch]
-cmd = ["cargo", "watch", "-x", "run"]
+cmd = ["cargo", "bacon", "run"]
 
 [tasks.watch-test]
-cmd = ["cargo", "watch", "-x", "test"]
+cmd = ["cargo", "bacon", "test"]
 
 # Quality assurance tasks
 [tasks.lint]
@@ -289,7 +289,7 @@ cmd = ["sh", "-c", "cargo deps | dot -Tpng > deps.png"]
 cmd = [
     "sh",
     "-c",
-    "cargo install cargo-watch cargo-audit cargo-outdated cargo-license cargo-nextest",
+    "cargo install cargo-bacon cargo-audit cargo-outdated cargo-license cargo-nextest",
 ]
 description = "Install additional Rust development tools via cargo (rustfmt and clippy included with Rust)"
 env = { RUST_LOG = "debug" }

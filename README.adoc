@@ -172,7 +172,7 @@ pixi run -e test test-all  # Run comprehensive tests
 === Available Environments
 
 * **default** - Base dependencies (rust, cargo, gtk)
-* **dev** - Development tools (rust-analyzer, rustfmt, clippy, cargo-watch)
+* **dev** - Development tools (rust-analyzer, rustfmt, clippy, cargo-bacon)
 * **test** - Testing tools (cargo-nextest, dev tools)
 * **release** - Release optimization tools (strip, dev tools)
 
