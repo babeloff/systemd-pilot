@@ -24,9 +24,10 @@ impl ThemeManager {
 
     pub fn detect_system_theme() -> bool {
         // Try to detect system theme preference
-        if let Ok(settings) = Settings::new("org.gnome.desktop.interface") {
-            let gtk_theme = settings.string("gtk-theme");
-            return gtk_theme.to_lowercase().contains("dark");
+        let settings = Settings::new("org.gnome.desktop.interface");
+        let gtk_theme = settings.string("gtk-theme");
+        if gtk_theme.to_lowercase().contains("dark") {
+            return true;
         }
 
         // Fallback to environment variable
@@ -66,10 +67,7 @@ impl ThemeManager {
         // Load custom CSS
         let css = self.get_custom_css(is_dark);
 
-        if let Err(e) = self.css_provider.load_from_data(css.as_bytes()) {
-            error!("Failed to load CSS: {}", e);
-            return;
-        }
+        self.css_provider.load_from_data(&css);
 
         // Apply CSS to the display
         if let Some(display) = Display::default() {

@@ -48,10 +48,10 @@ pub fn create_service_control_buttons() -> (Box, Button, Button, Button, Button,
     button_box.append(&start_button);
     button_box.append(&stop_button);
     button_box.append(&restart_button);
-    button_box.append(&Separator::new(gtk::Orientation::Vertical));
+    button_box.append(&Separator::new(gtk4::Orientation::Vertical));
     button_box.append(&enable_button);
     button_box.append(&disable_button);
-    button_box.append(&Separator::new(gtk::Orientation::Vertical));
+    button_box.append(&Separator::new(gtk4::Orientation::Vertical));
     button_box.append(&logs_button);
 
     (
@@ -89,7 +89,7 @@ pub fn create_services_tree_view(columns: &[&str]) -> (TreeView, gtk4::TreeStore
 
         // Special styling for status column
         if column_name == "Status" {
-            column.set_cell_data_func(&renderer, Some(Box::new(format_status_cell)));
+            column.set_cell_data_func(&renderer, format_status_cell);
         }
 
         tree_view.append_column(&column);
@@ -106,7 +106,7 @@ fn format_status_cell(
     iter: &gtk4::TreeIter,
 ) {
     if let Some(cell_text) = cell.downcast_ref::<CellRendererText>() {
-        if let Ok(status_text) = model.value(iter, 1).get::<String>() {
+        if let Ok(status_text) = model.get_value(iter, 1).get::<String>() {
             let css_class = match status_text.as_str() {
                 "Active" => "service-active",
                 "Inactive" => "service-inactive",
@@ -115,8 +115,14 @@ fn format_status_cell(
             };
 
             // Apply CSS class for styling
-            let style_context = cell_text.style_context();
-            style_context.add_class(css_class);
+            // Note: CellRendererText doesn't have style_context in GTK4
+            // We can set markup instead
+            let markup = format!(
+                "<span class=\"{}\">{}</span>",
+                css_class,
+                glib::markup_escape_text(&status_text)
+            );
+            cell_text.set_markup(Some(&markup));
         }
     }
 }
@@ -272,7 +278,7 @@ pub fn create_service_details_panel() -> (Box, Label, Label, Label, Label) {
 
     let description_value = Label::new(Some("-"));
     description_value.set_halign(gtk4::Align::Start);
-    description_value.set_line_wrap(true);
+    description_value.set_wrap(true);
     description_value.set_selectable(true);
 
     // Arrange in grid
@@ -356,7 +362,7 @@ pub fn create_error_widget(message: &str) -> Box {
     icon.set_markup("<span size=\"xx-large\">⚠️</span>");
 
     let label = Label::new(Some(message));
-    label.set_line_wrap(true);
+    label.set_wrap(true);
     label.set_justify(gtk4::Justification::Center);
 
     error_box.append(&icon);
@@ -381,7 +387,7 @@ pub fn create_empty_state_widget(title: &str, subtitle: &str) -> Box {
     ));
 
     let subtitle_label = Label::new(Some(subtitle));
-    subtitle_label.set_line_wrap(true);
+    subtitle_label.set_wrap(true);
     subtitle_label.set_justify(gtk4::Justification::Center);
     let style_context = subtitle_label.style_context();
     style_context.add_class("dim-label");

@@ -484,9 +484,7 @@ const COMPONENT_STYLES: &str = r#"
 pub fn apply_component_styles(widget: &impl IsA<Widget>) -> Result<(), Box<dyn std::error::Error>> {
     let css_provider = CssProvider::new();
 
-    css_provider
-        .load_from_data(COMPONENT_STYLES.as_bytes())
-        .map_err(|e| format!("Failed to load component CSS: {}", e))?;
+    css_provider.load_from_data(COMPONENT_STYLES);
 
     let style_context = widget.style_context();
     style_context.add_provider(&css_provider, STYLE_PROVIDER_PRIORITY_APPLICATION);

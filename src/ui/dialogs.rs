@@ -2,8 +2,7 @@ use anyhow::Result;
 use glib::clone;
 use gtk4::prelude::*;
 use gtk4::{
-    AlertDialog, ComboBoxText, Dialog, Entry, FileDialog, Grid, Label, ResponseType,
-    ScrolledWindow, TextView, Window,
+    ComboBoxText, Dialog, Entry, Grid, Label, ResponseType, ScrolledWindow, TextView, Window,
 };
 use log::{debug, error, info, warn};
 use std::cell::RefCell;
@@ -13,33 +12,62 @@ use std::rc::Rc;
 use crate::remote_host::{AuthType, RemoteHost};
 
 pub fn show_error_dialog(parent: &Window, title: &str, message: &str) {
-    let dialog = AlertDialog::new(Some(title));
-    dialog.set_detail(Some(message));
-    dialog.set_modal(true);
-    dialog.show(Some(parent));
+    let dialog = gtk4::MessageDialog::new(
+        Some(parent),
+        gtk4::DialogFlags::MODAL,
+        gtk4::MessageType::Error,
+        gtk4::ButtonsType::Ok,
+        message,
+    );
+    dialog.set_title(Some(title));
+    dialog.show();
+    dialog.connect_response(|dialog, _| {
+        dialog.close();
+    });
 }
 
 pub fn show_info_dialog(parent: &Window, title: &str, message: &str) {
-    let dialog = AlertDialog::new(Some(title));
-    dialog.set_detail(Some(message));
-    dialog.set_modal(true);
-    dialog.show(Some(parent));
+    let dialog = gtk4::MessageDialog::new(
+        Some(parent),
+        gtk4::DialogFlags::MODAL,
+        gtk4::MessageType::Info,
+        gtk4::ButtonsType::Ok,
+        message,
+    );
+    dialog.set_title(Some(title));
+    dialog.show();
+    dialog.connect_response(|dialog, _| {
+        dialog.close();
+    });
 }
 
 pub fn show_warning_dialog(parent: &Window, title: &str, message: &str) {
-    let dialog = AlertDialog::new(Some(title));
-    dialog.set_detail(Some(message));
-    dialog.set_modal(true);
-    dialog.show(Some(parent));
+    let dialog = gtk4::MessageDialog::new(
+        Some(parent),
+        gtk4::DialogFlags::MODAL,
+        gtk4::MessageType::Warning,
+        gtk4::ButtonsType::Ok,
+        message,
+    );
+    dialog.set_title(Some(title));
+    dialog.show();
+    dialog.connect_response(|dialog, _| {
+        dialog.close();
+    });
 }
 
 pub fn show_confirmation_dialog(parent: &Window, title: &str, message: &str) -> bool {
-    let dialog = AlertDialog::new(Some(title));
-    dialog.set_detail(Some(message));
-    dialog.set_modal(true);
-    dialog.set_buttons(&["Cancel", "Confirm"]);
-    dialog.set_cancel_button(0);
-    dialog.set_default_button(1);
+    let dialog = gtk4::MessageDialog::new(
+        Some(parent),
+        gtk4::DialogFlags::MODAL,
+        gtk4::MessageType::Question,
+        gtk4::ButtonsType::None,
+        message,
+    );
+    dialog.set_title(Some(title));
+    dialog.add_button("Cancel", ResponseType::Cancel);
+    dialog.add_button("Confirm", ResponseType::Accept);
+    dialog.set_default_response(ResponseType::Accept);
 
     // For now, return true - in a real implementation you'd use async callbacks
     // This is a simplified version for the GTK4 upgrade
@@ -49,7 +77,7 @@ pub fn show_confirmation_dialog(parent: &Window, title: &str, message: &str) -> 
 pub fn show_add_host_dialog(
     parent: &Window,
     remote_hosts: &Rc<RefCell<HashMap<String, RemoteHost>>>,
-) -> Option<RemoteHost> {
+) {
     let dialog = Dialog::new();
     dialog.set_title(Some("Add Remote Host"));
     dialog.set_transient_for(Some(parent));
@@ -144,61 +172,78 @@ pub fn show_add_host_dialog(
     key_button.connect_clicked(move |_| {
         if let Some(dialog) = dialog_weak.upgrade() {
             if let Some(parent) = dialog.transient_for() {
-                let file_dialog = FileDialog::new();
-                file_dialog.set_title("Select SSH Key");
+                let file_dialog = gtk4::FileChooserDialog::new(
+                    Some("Select SSH Key"),
+                    Some(&parent),
+                    gtk4::FileChooserAction::Open,
+                    &[
+                        ("Cancel", ResponseType::Cancel),
+                        ("Select", ResponseType::Accept),
+                    ],
+                );
                 file_dialog.set_modal(true);
-                // Note: GTK4 FileDialog uses async API, this is a simplified version
-                // In a real implementation, you'd use file_dialog.open() with a callback
+
+                let key_entry_for_dialog = key_entry_clone.clone();
+                file_dialog.connect_response(move |dialog, response| {
+                    if response == ResponseType::Accept {
+                        if let Some(file) = dialog.file() {
+                            if let Some(path) = file.path() {
+                                key_entry_for_dialog.set_text(&path.display().to_string());
+                            }
+                        }
+                    }
+                    dialog.close();
+                });
+
+                file_dialog.show();
             }
         }
     });
 
     dialog.set_child(Some(&grid));
 
-    dialog.show();
+    let remote_hosts_clone = remote_hosts.clone();
+    dialog.connect_response(move |dialog, response| {
+        if response == ResponseType::Ok {
+            let name = name_entry.text().to_string();
+            let hostname = hostname_entry.text().to_string();
+            let username = username_entry.text().to_string();
 
-    let mut result = None;
-    if dialog.run() == ResponseType::Ok {
-        let name = name_entry.text().to_string();
-        let hostname = hostname_entry.text().to_string();
-        let username = username_entry.text().to_string();
+            if !name.is_empty() && !hostname.is_empty() && !username.is_empty() {
+                let auth_type = if auth_combo.active() == Some(0) {
+                    AuthType::Password
+                } else {
+                    let key_path = key_entry.text().to_string();
+                    AuthType::Key {
+                        path: if key_path.is_empty() {
+                            None
+                        } else {
+                            Some(key_path.into())
+                        },
+                    }
+                };
 
-        if !name.is_empty() && !hostname.is_empty() && !username.is_empty() {
-            let auth_type = if auth_combo.active() == Some(0) {
-                AuthType::Password
-            } else {
-                let key_path = key_entry.text().to_string();
-                AuthType::Key {
-                    path: if key_path.is_empty() {
-                        None
-                    } else {
-                        Some(key_path.into())
-                    },
-                }
-            };
+                let host = RemoteHost {
+                    name: name.clone(),
+                    hostname,
+                    username,
+                    auth_type,
+                };
 
-            let host = RemoteHost {
-                name: name.clone(),
-                hostname,
-                username,
-                auth_type,
-            };
-
-            // Add to hosts collection
-            remote_hosts.borrow_mut().insert(name, host.clone());
-            result = Some(host);
+                remote_hosts_clone.borrow_mut().insert(name.clone(), host);
+            }
         }
-    }
+        dialog.close();
+    });
 
-    dialog.close();
-    result
+    dialog.show();
 }
 
 pub fn show_edit_host_dialog(
     parent: &Window,
     host: &RemoteHost,
     remote_hosts: &Rc<RefCell<HashMap<String, RemoteHost>>>,
-) -> Option<RemoteHost> {
+) {
     let dialog = Dialog::new();
     dialog.set_title(Some("Edit Remote Host"));
     dialog.set_transient_for(Some(parent));
@@ -287,48 +332,44 @@ pub fn show_edit_host_dialog(
 
     dialog.set_child(Some(&grid));
 
-    dialog.show();
+    let remote_hosts_clone = remote_hosts.clone();
+    let old_name = host.name.clone();
+    dialog.connect_response(move |dialog, response| {
+        if response == ResponseType::Ok {
+            let new_name = name_entry.text().to_string();
+            let hostname = hostname_entry.text().to_string();
+            let username = username_entry.text().to_string();
 
-    let mut result = None;
-    if dialog.run() == ResponseType::Ok {
-        let new_name = name_entry.text().to_string();
-        let hostname = hostname_entry.text().to_string();
-        let username = username_entry.text().to_string();
+            if !new_name.is_empty() && !hostname.is_empty() && !username.is_empty() {
+                let auth_type = if auth_combo.active() == Some(0) {
+                    AuthType::Password
+                } else {
+                    let key_path = key_entry.text().to_string();
+                    AuthType::Key {
+                        path: if key_path.is_empty() {
+                            None
+                        } else {
+                            Some(key_path.into())
+                        },
+                    }
+                };
 
-        if !new_name.is_empty() && !hostname.is_empty() && !username.is_empty() {
-            let auth_type = if auth_combo.active() == Some(0) {
-                AuthType::Password
-            } else {
-                let key_path = key_entry.text().to_string();
-                AuthType::Key {
-                    path: if key_path.is_empty() {
-                        None
-                    } else {
-                        Some(key_path.into())
-                    },
-                }
-            };
+                let new_host = RemoteHost {
+                    name: new_name.clone(),
+                    hostname,
+                    username,
+                    auth_type,
+                };
 
-            let updated_host = RemoteHost {
-                name: new_name.clone(),
-                hostname,
-                username,
-                auth_type,
-            };
-
-            // Update hosts collection
-            let mut hosts = remote_hosts.borrow_mut();
-            if new_name != host.name {
-                // Name changed, remove old entry
-                hosts.remove(&host.name);
+                // Update hosts collection
+                remote_hosts_clone.borrow_mut().remove(&old_name);
+                remote_hosts_clone.borrow_mut().insert(new_name, new_host);
             }
-            hosts.insert(new_name, updated_host.clone());
-            result = Some(updated_host);
         }
-    }
+        dialog.close();
+    });
 
-    dialog.close();
-    result
+    dialog.show();
 }
 
 pub fn show_service_logs_dialog(
@@ -374,12 +415,18 @@ pub fn show_service_logs_dialog(
 
     dialog.set_child(Some(&content_box));
 
+    dialog.connect_response(|dialog, _| {
+        dialog.close();
+    });
+
     dialog.show();
-    dialog.run();
-    dialog.close();
 }
 
-pub fn show_password_dialog(parent: &Window, host: &RemoteHost) -> Option<String> {
+pub fn show_password_dialog(
+    parent: &Window,
+    host: &RemoteHost,
+    callback: impl FnOnce(Option<String>) + 'static,
+) {
     let dialog = Dialog::new();
     dialog.set_title(Some(&format!("Password for {}", host.connection_string())));
     dialog.set_transient_for(Some(parent));
@@ -413,19 +460,22 @@ pub fn show_password_dialog(parent: &Window, host: &RemoteHost) -> Option<String
         dialog.response(ResponseType::Ok);
     }));
 
+    dialog.connect_response(move |dialog, response| {
+        let result = if response == ResponseType::Ok {
+            let password = password_entry.text().to_string();
+            if !password.is_empty() {
+                Some(password)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        callback(result);
+        dialog.close();
+    });
+
     dialog.show();
-    password_entry.grab_focus();
-
-    let mut result = None;
-    if dialog.run() == ResponseType::Ok {
-        let password = password_entry.text().to_string();
-        if !password.is_empty() {
-            result = Some(password);
-        }
-    }
-
-    dialog.close();
-    result
 }
 
 pub fn show_service_details_dialog(
@@ -470,9 +520,11 @@ pub fn show_service_details_dialog(
 
     dialog.set_child(Some(&content_box));
 
+    dialog.connect_response(|dialog, _| {
+        dialog.close();
+    });
+
     dialog.show();
-    dialog.run();
-    dialog.close();
 }
 
 pub fn show_about_dialog(parent: &Window) {
@@ -480,13 +532,13 @@ pub fn show_about_dialog(parent: &Window) {
     dialog.set_transient_for(Some(parent));
     dialog.set_modal(true);
 
-    dialog.set_program_name("systemd Pilot");
-    dialog.set_version("3.0.0");
+    dialog.set_program_name(Some("systemd Pilot"));
+    dialog.set_version(Some("3.0.0"));
     dialog.set_comments(Some(
         "A graphical tool for managing systemd services locally and remotely",
     ));
     dialog.set_website(Some("https://github.com/mfat/systemd-pilot"));
-    dialog.set_website_label(Some("GitHub Repository"));
+    dialog.set_website_label("GitHub Repository");
     dialog.set_authors(&["mFat"]);
     dialog.set_license(Some("GNU General Public License v3.0"));
     dialog.set_copyright(Some("Copyright © 2024 mFat"));

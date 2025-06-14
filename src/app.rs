@@ -1,10 +1,11 @@
 use anyhow::{anyhow, Result};
-use glib::{clone, MainContext, PRIORITY_DEFAULT};
+use glib::{clone, MainContext, Priority};
 use gtk4::prelude::*;
 use gtk4::{
-    ApplicationWindow, Box, Button, CellRendererText, CheckButton, ComboBoxText, Dialog, Entry,
-    Grid, Label, ListBox, ListBoxRow, Notebook, Paned, ResponseType, ScrolledWindow, TextView,
-    TreeIter, TreePath, TreeSelection, TreeStore, TreeView, TreeViewColumn, Window,
+    ApplicationWindow, Box, Button, CellRendererText, CheckButton, ComboBoxText, Dialog,
+    DialogFlags, Entry, Grid, Label, ListBox, ListBoxRow, Notebook, Paned, ResponseType,
+    ScrolledWindow, TextView, TreeIter, TreePath, TreeSelection, TreeStore, TreeView,
+    TreeViewColumn, Window,
 };
 use log::{debug, error, info, warn};
 use std::cell::RefCell;
@@ -23,7 +24,7 @@ pub struct SystemdPilotApp {
     notebook: Notebook,
     remote_hosts: Rc<RefCell<HashMap<String, RemoteHost>>>,
     active_connections: Arc<Mutex<HashMap<String, ssh2::Session>>>,
-    service_manager: Rc<ServiceManager>,
+    service_manager: Arc<ServiceManager>,
     theme_manager: Rc<ThemeManager>,
     runtime: Arc<Runtime>,
 
@@ -43,7 +44,7 @@ impl SystemdPilotApp {
         let runtime = Arc::new(Runtime::new().expect("Failed to create Tokio runtime"));
 
         let theme_manager = Rc::new(ThemeManager::new());
-        let service_manager = Rc::new(ServiceManager::new(runtime.clone()));
+        let service_manager = Arc::new(ServiceManager::new(runtime.clone()));
 
         // Create tree stores
         let local_services_store = TreeStore::new(&[
@@ -98,7 +99,8 @@ impl SystemdPilotApp {
 
     fn setup_header_bar(&self) {
         let header_bar = gtk4::HeaderBar::new();
-        header_bar.set_title(Some("systemd Pilot"));
+        let title = Label::new(Some("systemd Pilot"));
+        header_bar.set_title_widget(Some(&title));
         header_bar.set_show_title_buttons(true);
 
         // Add theme toggle button
@@ -118,12 +120,10 @@ impl SystemdPilotApp {
         let refresh_button = Button::with_label("🔄");
         refresh_button.set_tooltip_text(Some("Refresh services"));
 
-        let app_weak = Rc::downgrade(&Rc::new(RefCell::new(self)));
-        refresh_button.connect_clicked(move |_| {
-            if let Some(app) = app_weak.upgrade() {
-                app.borrow().refresh_all_services();
-            }
-        });
+        // TODO: Connect refresh button after refactoring to handle callbacks properly
+        // refresh_button.connect_clicked(move |_| {
+        //     // Need to refactor to properly handle self reference
+        // });
 
         header_bar.pack_start(&refresh_button);
 
@@ -177,7 +177,7 @@ impl SystemdPilotApp {
         // Services list
         self.setup_local_services_list();
         let scrolled = ScrolledWindow::new();
-        scrolled.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Automatic);
+        scrolled.set_policy(gtk4::PolicyType::Automatic, gtk4::PolicyType::Automatic);
         scrolled.set_child(Some(&self.local_services_list));
 
         scrolled.set_vexpand(true);
@@ -271,7 +271,11 @@ impl SystemdPilotApp {
             &remote_logs_button,
         );
 
-        paned.upcast()
+        {
+            let wrapper_box = Box::new(gtk4::Orientation::Vertical, 0);
+            wrapper_box.append(&paned);
+            wrapper_box
+        }
     }
 
     fn setup_local_services_list(&self) {
@@ -508,8 +512,8 @@ impl SystemdPilotApp {
 
     fn refresh_hosts_list(&self) {
         // Clear existing hosts in UI
-        let children: Vec<gtk4::Widget> = self.hosts_listbox.children();
-        for child in children {
+        // Clear existing items
+        while let Some(child) = self.hosts_listbox.first_child() {
             self.hosts_listbox.remove(&child);
         }
 
@@ -522,11 +526,11 @@ impl SystemdPilotApp {
                 "<b>{}</b>\n{}@{}",
                 name, host.username, host.hostname
             ));
-            row.add(&label);
-            self.hosts_listbox.add(&row);
+            row.set_child(Some(&label));
+            self.hosts_listbox.append(&row);
         }
 
-        self.hosts_listbox.show_all();
+        self.hosts_listbox.show();
     }
 
     fn refresh_all_services(&self) {
@@ -540,7 +544,7 @@ impl SystemdPilotApp {
         let store = self.local_services_store.clone();
         let show_inactive = self.show_inactive_button.is_active();
 
-        let (sender, receiver) = MainContext::channel(PRIORITY_DEFAULT);
+        let (sender, receiver) = std::sync::mpsc::channel();
 
         runtime.spawn(async move {
             match service_manager.list_local_services(show_inactive).await {
@@ -548,25 +552,30 @@ impl SystemdPilotApp {
                     sender.send(services).expect("Failed to send services");
                 }
                 Err(e) => {
-                    error!("Failed to list local services: {}", e);
+                    error!("Failed to list services: {}", e);
                 }
             }
         });
 
-        receiver.attach(None, move |services| {
-            store.clear();
-            for service in services {
-                let iter = store.append(None);
-                store.set(
-                    &iter,
-                    &[
-                        (0, &service.name),
-                        (1, &service.status.to_string()),
-                        (2, &service.description.unwrap_or_default()),
-                    ],
-                );
+        glib::idle_add_local(move || match receiver.try_recv() {
+            Ok(services) => {
+                store.clear();
+                for service in services {
+                    store.insert_with_values(
+                        None,
+                        None,
+                        &[
+                            (0, &service.name),
+                            (1, &service.status.to_string()),
+                            (2, &service.enabled.to_string()),
+                            (3, &service.description.as_deref().unwrap_or("")),
+                        ],
+                    );
+                }
+                glib::ControlFlow::Break
             }
-            glib::Continue(false)
+            Err(std::sync::mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => glib::ControlFlow::Break,
         });
     }
 
@@ -578,7 +587,7 @@ impl SystemdPilotApp {
 
 fn get_selected_service_name(selection: &TreeSelection) -> Option<String> {
     if let Some((model, iter)) = selection.selected() {
-        model.value(&iter, 0).get::<String>().ok()
+        model.get_value(&iter, 0).get::<String>().ok()
     } else {
         None
     }
@@ -602,17 +611,15 @@ fn show_service_logs_dialog(parent: &ApplicationWindow, service_name: &str, host
     text_view.set_cursor_visible(false);
 
     // Set monospace font
-    if let Some(font_desc) = pango::FontDescription::from_string("monospace") {
-        text_view.override_font(Some(&font_desc));
-    }
+    let font_desc = pango::FontDescription::from_string("monospace");
+    text_view.set_monospace(true);
 
-    scrolled.add(&text_view);
+    scrolled.set_child(Some(&text_view));
 
     let content_area = dialog.content_area();
-    content_area.pack_start(&scrolled, true, true, 0);
+    content_area.append(&scrolled);
 
-    dialog.show_all();
-    dialog.run();
+    dialog.show();
     dialog.close();
 }
 
@@ -663,31 +670,33 @@ fn show_add_host_dialog(
     grid.attach(&auth_combo, 1, 3, 1, 1);
 
     let content_area = dialog.content_area();
-    content_area.pack_start(&grid, true, true, 0);
+    content_area.append(&grid);
 
-    dialog.show_all();
-
-    if dialog.run() == ResponseType::Ok {
-        let name = name_entry.text().to_string();
-        let hostname = hostname_entry.text().to_string();
-        let username = username_entry.text().to_string();
-        let auth_type = if auth_combo.active() == Some(0) {
-            AuthType::Password
-        } else {
-            AuthType::Key { path: None }
-        };
-
-        if !name.is_empty() && !hostname.is_empty() && !username.is_empty() {
-            let host = RemoteHost {
-                name: name.clone(),
-                hostname,
-                username,
-                auth_type,
+    let remote_hosts_clone = remote_hosts.clone();
+    dialog.connect_response(move |dialog, response| {
+        if response == ResponseType::Ok {
+            let name = name_entry.text().to_string();
+            let hostname = hostname_entry.text().to_string();
+            let username = username_entry.text().to_string();
+            let auth_type = if auth_combo.active() == Some(0) {
+                AuthType::Password
+            } else {
+                AuthType::Key { path: None }
             };
 
-            remote_hosts.borrow_mut().insert(name, host);
-        }
-    }
+            if !name.is_empty() && !hostname.is_empty() && !username.is_empty() {
+                let host = RemoteHost {
+                    name: name.clone(),
+                    hostname,
+                    username,
+                    auth_type,
+                };
 
-    dialog.close();
+                remote_hosts_clone.borrow_mut().insert(name, host);
+            }
+        }
+        dialog.close();
+    });
+
+    dialog.show();
 }
